@@ -200,6 +200,15 @@ body{
   flex-direction:column;
   overflow:hidden;
   min-width:0;
+
+  /* Make panel text comfortably large on ALL viewports */
+  font-size: 16px;
+  line-height: 1.6;
+}
+
+/* Every child inside the panel inherits this size instead of 10–13px */
+.side-panel *{
+  font-size: inherit;
 }
 
 /* ── Mode selector ─────────────────────────────────────────────── */
@@ -1184,4 +1193,92 @@ input[type="color"]{height:34px;padding:2px;cursor:pointer;border-radius:6px}
 .kb-upload-zone:hover {
   background: rgba(99,102,241,.08);
   border-color: rgba(99,102,241,.6);
+}
+
+/* ── Responsive layout & typography ─────────────────────────── */
+
+/* Tablet / narrow laptop */
+@media (max-width: 1024px) {
+  /* Let the page scroll */
+  body {
+    overflow: auto;
+    height: auto;
+    min-height: 100vh;
+  }
+
+  /* Stack layout: header, canvas, then panel full‑width */
+  .app-container {
+    grid-template-columns: 1fr;
+    grid-template-rows: 52px 260px auto;
+    height: auto;
+  }
+
+  .canvas-area {
+    min-height: 260px;
+  }
+
+  .side-panel {
+    grid-column: 1 / -1;
+  }
+
+  /* Comfortable base size for all text in the panel */
+  .side-panel {
+    font-size: 16px;
+    line-height: 1.6;
+  }
+
+  .side-panel * {
+    font-size: inherit;
+  }
+
+  /* Slightly larger key labels */
+  .header-title {
+    font-size: 18px;
+  }
+
+  .section-heading,
+  .agent-role,
+  .feed-agent-label {
+    font-size: 17px;
+  }
+
+  .topic-input,
+  .run-btn,
+  .result-text,
+  .result-html {
+    font-size: 16px;
+  }
+
+  .agent-status,
+  .feed-message {
+    font-size: 15px;
+  }
+
+  .feed-time,
+  .report-file-badge,
+  .model-card-desc {
+    font-size: 13px;
+  }
+}
+
+/* Phone portrait and very small widths */
+@media (max-width: 640px) {
+  .app-container {
+    grid-template-rows: 52px 220px auto;
+  }
+
+  .canvas-area {
+    min-height: 220px;
+  }
+
+  .side-panel {
+    font-size: 17px;
+  }
+
+  .header-title,
+  .section-heading,
+  .agent-role,
+  .feed-agent-label {
+    font-size: 18px;
+  }
 }

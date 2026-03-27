@@ -1,0 +1,22 @@
+RESEARCH REPORT
+============================================================
+Topic:     Impact of AI on software development
+Job ID:    87581176
+Generated: 2026-03-27 22:58:34
+============================================================
+
+Agent stopped due to iteration limit or time limit.
+
+
+--- Report Metadata ---
+Topic:              Impact of AI on software development
+Job ID:             87581176
+Generated:          2026-03-27 22:58:34
+Model:              phi3:mini
+Temperature:        0.3
+Top-K:              default
+Top-P:              default
+Context Window:     4096
+Repeat Penalty:     default
+Confidence Score:   N/A
+Active Agents:      Research Coordinator, Data Researcher, Data Analyst, Report Writer, File System Agent, Custom Agent
