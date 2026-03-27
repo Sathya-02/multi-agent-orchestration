@@ -736,7 +736,44 @@ export default function App() {
     await fetchAgents()
   }
 
-  /* ── Spawn decisions ──────────────────────────────────── */
+const handleOpenSkills = async (agent) => {
+    setSkillsAgentId(agent.id)
+    setSkillsText('')
+    setAgentTab('skills')
+    setShowAgentEditor(true)
+    try {
+      const d = await fetch(`${API_URL}/agents/${agent.id}/skills`).then(r => r.json())
+      setSkillsText(d.content || '')
+    } catch {
+      setSkillsText('# Failed to load SKILLS.md')
+    }
+  }
+
+  const handleToggleActive = async (agent) => {
+    const ep = agent.active === false ? 'activate' : 'deactivate'
+    await fetch(`${API_URL}/agents/${agent.id}/${ep}`, { method: 'POST' })
+    await fetchAgents()
+  }
+
+  const handleSaveSkills = async () => {
+    if (!skillsAgentId) return
+    setSkillsSaving(true)
+    try {
+      await fetch(`${API_URL}/agents/${skillsAgentId}/skills`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: skillsText }),
+      })
+      addLog('system', '⚙️ System', `📄 SKILLS.md saved for ${skillsAgentId}`)
+      await fetchAgents()
+    } catch {
+      addLog('system', '⚙️ System', `❌ Failed to save SKILLS.md for ${skillsAgentId}`)
+    } finally {
+      setSkillsSaving(false)
+    }
+  }
+
+    /* ── Spawn decisions ──────────────────────────────────── */
   const handleSpawnDecision = async (request_id, approved) => {
     await fetch(`${API_URL}/spawns/decide`, { method:'POST',
       headers:{'Content-Type':'application/json'}, body:JSON.stringify({request_id, approved}) })
