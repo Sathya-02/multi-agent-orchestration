@@ -1,0 +1,132 @@
+# ════════════════════════════════════════════════════════════════════════
+# docker-compose.yml — Local Development Stack
+# ════════════════════════════════════════════════════════════════════════
+#
+# Services:
+#   ollama   — local LLM runtime (sidecar, GPU-aware)
+#   backend  — FastAPI + CrewAI (uses Ollama via internal network)
+#   frontend — React + Vite served by Nginx
+#
+# Usage:
+#   docker compose up -d
+#   docker compose logs -f backend
+#   docker compose down
+#
+# First run — pull a model:
+#   docker compose exec ollama ollama pull phi3:mini
+#   docker compose exec ollama ollama pull nomic-embed-text  # for RAG
+# ════════════════════════════════════════════════════════════════════════
+
+version: "3.9"
+
+services:
+
+  # ── Ollama — LLM runtime ───────────────────────────────────────────────
+  ollama:
+    image: ollama/ollama:latest
+    container_name: mao-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"           # expose for CLI access from host
+    volumes:
+      - ollama_models:/root/.ollama   # persist downloaded models
+    environment:
+      - OLLAMA_KEEP_ALIVE=24h         # keep model loaded between requests
+    # ── GPU support (uncomment one block) ─────────────────────────────
+    # NVIDIA GPU:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    #
+    # Apple Silicon (Mac) — Ollama handles Metal automatically via host.
+    # For Mac, run Ollama directly on the host and set:
+    #   OLLAMA_URL=http://host.docker.internal:11434
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # ── Backend — FastAPI + CrewAI ────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: mao-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      # LLM — points to the ollama sidecar
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=phi3:mini
+
+      # Feature flags (set to false to disable)
+      - SEARCH_ENABLED=true
+      - RAG_ENABLED=true
+      - TELEGRAM_ENABLED=false       # set to true + add token below
+      - SELF_IMPROVER_ENABLED=true
+      - AGENT_SPAWN_ENABLED=true
+      - FILESYSTEM_ENABLED=false     # safer off in Docker
+
+      # CORS — allow the frontend container
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173,http://frontend
+
+      # Telegram (optional — leave blank to disable)
+      - TELEGRAM_BOT_TOKEN=
+      - TELEGRAM_ALLOWED_CHAT_IDS=
+      - TELEGRAM_NOTIFY_CHAT_ID=
+
+      # Multi-user auth (optional — leave blank for local use)
+      - REQUIRE_API_KEY=false
+      - MASTER_API_KEY=
+
+      # Logging
+      - LOG_LEVEL=INFO
+    volumes:
+      # Persist all generated data outside the container
+      - mao_reports:/app/reports
+      - mao_uploads:/app/uploads
+      - mao_knowledge_base:/app/knowledge_base
+      - mao_data:/app/data              # JSON config + RAG store
+      - mao_agents:/app/agents          # SKILLS.md files
+      - mao_tools:/app/tools            # TOOL.md files
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ── Frontend — React served by Nginx ─────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+      args:
+        - VITE_API_URL=http://localhost:8000
+    container_name: mao-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+# ── Named volumes — data persists across container restarts ──────────────
+volumes:
+  ollama_models:
+  mao_reports:
+  mao_uploads:
+  mao_knowledge_base:
+  mao_data:
+  mao_agents:
+  mao_tools:

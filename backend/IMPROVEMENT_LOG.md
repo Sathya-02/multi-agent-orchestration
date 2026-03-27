@@ -1,0 +1,42 @@
+
+## Cycle: 2026-03-27 11:06
+- Best practices updated: True
+- Auto-applied changes: 1
+- Proposals written: 0
+
+### Changes applied:
+- Agent 'researcher' goal updated (confidence=95%): This is more detailed and directly related to a well-defined goal that includes scope clarity which will guide better data collection practices. It also implies an understanding of different sources for robust research findings.
+
+## Cycle: 2026-03-27 14:55
+- Best practices updated: True
+- Auto-applied changes: 1
+- Proposals written: 0
+
+### Changes applied:
+- Agent 'researcher' goal updated (confidence=95%): The suggested goal is more precise as it emphasizes 'extensive' and 'accurate', which are crucial qualities in data collection, ensuring that all necessary information will be gathered without ambiguity about what constitutes comprehensiveness or reliability. It also specifies the need for credible sources.
+
+## Cycle: 2026-03-27 15:58
+- Best practices updated: True
+- Auto-applied changes: 0
+- Proposals written: 0
+
+## Cycle: 2026-03-27 16:04
+- Best practices updated: True
+- Auto-applied changes: 1
+- Proposals written: 0
+
+### Changes applied:
+- Agent 'researcher' goal updated (confidence=95%): This is more direct and emphasizes efficiency in gathering relevant datasets which align with a researcher's skills of sourcing information accurately. It reduces complexity for delegation, as it does not require external agents to perform the task initially assigned.
+
+## Cycle: 2026-03-27 16:10
+- Best practices updated: True
+- Auto-applied changes: 1
+- Proposals written: 0
+
+### Changes applied:
+- Agent 'researcher' goal updated (confidence=95%): This is more concise, clearly states 'minimal external dependencies', which emphasizes efficiency in data acquisition. It also specifies the need for accuracy and currency of information directly related to research goals rather than just comprehensiveness or reliability alone.
+
+## Cycle: 2026-03-27 16:20
+- Best practices updated: False
+- Auto-applied changes: 0
+- Proposals written: 0

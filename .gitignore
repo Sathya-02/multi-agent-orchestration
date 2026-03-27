@@ -1,0 +1,56 @@
+# ════════════════════════════════════════════════════════════════
+# .gitignore — Multi Agent Orchestration
+# ════════════════════════════════════════════════════════════════
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+.venv/
+env/
+pip-selfcheck.json
+*.egg-info/
+.eggs/
+
+# ── Node / Frontend ───────────────────────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.local
+
+# ── Runtime data (never commit these) ────────────────────────────────────
+backend/data/*.json          # custom_agents.json, rag_store.json, etc.
+backend/reports/             # generated reports
+backend/uploads/             # uploaded files
+backend/knowledge_base/      # RAG source files
+backend/logs/
+backend/agents/*/SKILLS.md   # runtime-edited agent definitions
+backend/tools/*/TOOL.md      # runtime-edited tool definitions
+
+# ── Environment & secrets ─────────────────────────────────────────────────
+.env
+.env.cloud
+.env.local
+*.pem
+*.key
+
+# ── Docker ────────────────────────────────────────────────────────────────
+.docker/
+
+# ── macOS ─────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ── IDE ───────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Logs ──────────────────────────────────────────────────────────────────
+*.log
+*.jsonl

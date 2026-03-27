@@ -1,0 +1,169 @@
+# ════════════════════════════════════════════════════════════════════════
+# docker-compose.cloud.yml — Production Cloud Deployment
+# ════════════════════════════════════════════════════════════════════════
+#
+# Extends docker-compose.yml for cloud/multi-user deployments.
+#
+# NEW services vs local compose:
+#   traefik  — reverse proxy + automatic HTTPS (Let's Encrypt)
+#   redis    — job queue + session store for multi-user
+#   postgres — user accounts, API key store, job history
+#   worker   — background job runner (scales horizontally)
+#
+# Usage:
+#   # Copy env template and fill in secrets
+#   cp .env.cloud.example .env.cloud
+#
+#   # Deploy (first time — also runs DB migrations)
+#   docker compose -f docker-compose.yml -f docker-compose.cloud.yml \
+#     --env-file .env.cloud up -d
+#
+#   # Scale workers for more concurrent jobs
+#   docker compose -f docker-compose.yml -f docker-compose.cloud.yml \
+#     --env-file .env.cloud up -d --scale worker=3
+#
+# Recommended cloud providers:
+#   - AWS EC2 g4dn.xlarge  (T4 GPU, ~$0.50/hr)   — best for GPU inference
+#   - Hetzner AX52         (32-core, 128GB RAM)   — best value CPU
+#   - fly.io machines      (persistent volumes)   — easiest deploy
+#   - Railway.app          (Dockerfile auto-detect)— quickest to start
+# ════════════════════════════════════════════════════════════════════════
+
+version: "3.9"
+
+services:
+
+  # ── Traefik — Reverse Proxy + HTTPS ───────────────────────────────────
+  traefik:
+    image: traefik:v3.1
+    container_name: mao-traefik
+    restart: always
+    command:
+      - "--api.insecure=false"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.le.acme.tlschallenge=true"
+      - "--certificatesresolvers.le.acme.email=${ACME_EMAIL}"
+      - "--certificatesresolvers.le.acme.storage=/letsencrypt/acme.json"
+      # Redirect HTTP → HTTPS
+      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_certs:/letsencrypt
+
+  # ── Backend — overrides for cloud ─────────────────────────────────────
+  backend:
+    environment:
+      # Auth — REQUIRED in production
+      - REQUIRE_API_KEY=true
+      - MASTER_API_KEY=${MASTER_API_KEY}
+
+      # CORS — your actual domain
+      - ALLOWED_ORIGINS=https://${DOMAIN}
+
+      # Database connection (PostgreSQL for user/key storage)
+      - DATABASE_URL=postgresql://mao:${POSTGRES_PASSWORD}@postgres:5432/mao
+
+      # Redis (job queue + session store)
+      - REDIS_URL=redis://redis:6379/0
+
+      # Multi-user limits
+      - MAX_JOBS_PER_KEY=3
+      - JOB_TIMEOUT_SECONDS=600
+
+      # Filesystem access OFF by default in cloud
+      - FILESYSTEM_ENABLED=false
+
+      # Production log level
+      - LOG_LEVEL=WARNING
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.backend.rule=Host(`${DOMAIN}`) && PathPrefix(`/api`, `/ws`)"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.tls.certresolver=le"
+      - "traefik.http.services.backend.loadbalancer.server.port=8000"
+
+  # ── Frontend — overrides for cloud ────────────────────────────────────
+  frontend:
+    build:
+      args:
+        # Point to your actual domain
+        - VITE_API_URL=https://${DOMAIN}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`${DOMAIN}`)"
+      - "traefik.http.routers.frontend.entrypoints=websecure"
+      - "traefik.http.routers.frontend.tls.certresolver=le"
+      - "traefik.http.services.frontend.loadbalancer.server.port=80"
+
+  # ── PostgreSQL — User accounts + API key store ────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: mao-postgres
+    restart: always
+    environment:
+      - POSTGRES_DB=mao
+      - POSTGRES_USER=mao
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Initial schema
+      - ./infra/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mao"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis — Job queue + session store ────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: mao-redis
+    restart: always
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Worker — Async job runner (scales horizontally) ───────────────────
+  # Each worker picks jobs from the Redis queue independently.
+  # Scale: docker compose up -d --scale worker=3
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: always
+    command: ["sh", "-c", "PYTHONWARNINGS=ignore python worker.py"]
+    depends_on:
+      - redis
+      - postgres
+      - ollama
+    environment:
+      - OLLAMA_URL=http://ollama:11434
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - DATABASE_URL=postgresql://mao:${POSTGRES_PASSWORD}@postgres:5432/mao
+      - REQUIRE_API_KEY=true
+      - MASTER_API_KEY=${MASTER_API_KEY}
+      - LOG_LEVEL=WARNING
+    volumes:
+      - mao_reports:/app/reports
+      - mao_uploads:/app/uploads
+      - mao_knowledge_base:/app/knowledge_base
+      - mao_data:/app/data
+      - mao_agents:/app/agents
+      - mao_tools:/app/tools
+
+volumes:
+  traefik_certs:
+  postgres_data:
+  redis_data:
