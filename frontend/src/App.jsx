@@ -182,8 +182,25 @@ export default function App() {
   }, [])
 
   /* ── Helpers ──────────────────────────────────────────── */
-  const addLog = (agent, label, message, phase=false, ts=null, taskResult=false) =>
-    setLogs(p => [...p.slice(-150), { agent, label, message, phase, taskResult, ts: ts||Date.now()/1000 }])
+  const addLog = (agent, label, message, phase = false, ts = null, taskResult = false) =>
+  setLogs(prev => {
+    const last = prev[prev.length - 1]
+    // If the last entry is from the same agent with the same message, skip it
+    if (last && last.agent === agent && last.message === message) {
+      return prev
+    }
+    return [
+      ...prev.slice(-150),
+      {
+        agent,
+        label,
+        message,
+        phase,
+        taskResult,
+        ts: ts || Date.now() / 1000,
+      },
+    ]
+  })
 
   const fetchModels = async () => {
     try {

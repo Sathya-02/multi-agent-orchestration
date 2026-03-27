@@ -47,7 +47,7 @@ BUILTIN_AGENTS: list[dict] = [
         "color": "#6C63FF", "icon": "🎯",
         "allow_delegation": True,
         "max_iter": 10,
-        "tools": ["web_search", "request_new_agent"],
+        "tools": ["web_search", "knowledge_base_search", "calculator", "request_new_tool", "request_new_agent"],
     },
 
     # ── 2. Researcher ─────────────────────────────────────────────────────
@@ -73,6 +73,7 @@ BUILTIN_AGENTS: list[dict] = [
             "summariser",
             "read_uploaded_file",
             "calculator",
+            "request_new_tool",
         ],
     },
 
@@ -98,6 +99,7 @@ BUILTIN_AGENTS: list[dict] = [
             "summariser",
             "read_uploaded_file",
             "calculator",
+            "request_new_tool",
         ],
     },
 

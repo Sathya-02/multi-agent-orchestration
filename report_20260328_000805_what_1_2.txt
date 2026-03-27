@@ -1,0 +1,22 @@
+RESEARCH REPORT
+============================================================
+Topic:     what 1 + 2
+Job ID:    1f734510
+Generated: 2026-03-28 00:08:05
+============================================================
+
+Agent stopped due to iteration limit or time limit.
+
+
+--- Report Metadata ---
+Topic:              what 1 + 2
+Job ID:             1f734510
+Generated:          2026-03-28 00:08:05
+Model:              llama3.2:3b
+Temperature:        0.3
+Top-K:              default
+Top-P:              default
+Context Window:     4096
+Repeat Penalty:     default
+Confidence Score:   N/A
+Active Agents:      Research Coordinator, Data Researcher, Data Analyst, Report Writer, File System Agent

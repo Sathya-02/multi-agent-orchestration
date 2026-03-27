@@ -838,6 +838,79 @@ function Lighting({activeAgent}){
   )
 }
 
+function BlackboardStatus({ currentWorker, activeAgent, lastMessages }) {
+  const bgRef = useRef()
+
+  // Fade panel in/out when something is working
+  useFrame(({ clock }) => {
+    if (!bgRef.current) return
+    const t = clock.getElapsedTime()
+    const hasWorker = !!(currentWorker || activeAgent)
+    bgRef.current.material.opacity = hasWorker ? 0.9 + Math.sin(t * 1.5) * 0.05 : 0.0
+  })
+
+  const worker = currentWorker || {}
+
+  // Prefer structured fields from agent_working; fall back to AGENT_META + lastMessages
+  const agentId    = worker.agent || activeAgent
+  const agentMeta  = agentId ? AGENT_META[agentId] : null
+  const agentLabel = worker.label || agentMeta?.label || agentId
+  const toolLabel  = worker.tool_label || worker.tool || ''
+  const msg        = lastMessages?.[agentId] || ''
+
+  if (!agentId && !toolLabel) return null
+
+  const mainLine = agentLabel ? `${agentLabel} is working…` : ''
+  const toolLine = toolLabel
+    ? `Tool: ${toolLabel}`
+    : (msg ? msg.slice(0, 42) + (msg.length > 42 ? '…' : '') : '')
+
+  return (
+    <group position={[0, 3.9, -11.8]}>
+      {/* Dark overlay on top of the existing board */}
+      <mesh ref={bgRef} position={[0, 0, 0.01]}>
+        <planeGeometry args={[9.4, 1.4]} />
+        <meshBasicMaterial color="#020617" transparent opacity={0.0} />
+      </mesh>
+
+      <Text
+        position={[0, 0.42, 0.02]}
+        fontSize={0.22}
+        color="#e5f2ff"
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.008}
+        outlineColor="#1e293b"
+      >
+        CURRENT PIPELINE STAGE
+      </Text>
+
+      {mainLine && (
+        <Text
+          position={[0, 0.06, 0.02]}
+          fontSize={0.19}
+          color="#bfdbfe"
+          anchorX="center"
+          anchorY="middle"
+        >
+          {mainLine}
+        </Text>
+      )}
+
+      {toolLine && (
+        <Text
+          position={[0, -0.32, 0.02]}
+          fontSize={0.16}
+          color="#93c5fd"
+          anchorX="center"
+          anchorY="middle"
+        >
+          {toolLine}
+        </Text>
+      )}
+    </group>
+  )
+}
 
 /* ─────────────────────────────────────────────────────────────
    TABLE ACTIVITY PANEL
@@ -1294,6 +1367,11 @@ export default function AgentScene3D({activeAgent,agents,lastMessages,currentPha
     <Canvas camera={{position:[0,12,19],fov:43}} style={{width:'100%',height:'100%',background:'#f0f2f5'}} shadows>
       <Lighting activeAgent={activeAgent}/>
       <OfficeRoom/>
+      <BlackboardStatus
+        currentWorker={currentWorker}
+        activeAgent={activeAgent}
+        lastMessages={lastMessages}
+      />
       {HANDSHAKE_PAIRS.map(([a,b])=>(
         <CommArc key={`${a}-${b}`} agentA={a} agentB={b} active={activeAgent===a||activeAgent===b}/>
       ))}
