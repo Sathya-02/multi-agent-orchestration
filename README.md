@@ -130,7 +130,7 @@ The system has three major additions over the base multi-agent pattern:
 ## Project Structure
 
 ```
-multi-agent-3d/
+multi-agent-orchestration/
 ├── backend/
 │   ├── main.py                    # FastAPI server — all endpoints + WebSocket broadcast
 │   ├── agent_registry.py          # Agent store, custom_agents.json persistence, SKILLS.md helpers
@@ -251,7 +251,7 @@ ollama run phi3:mini "Hello"   # Ctrl+D to exit
 ### 3. Set up the backend
 
 ```bash
-cd ~/multi-agent-3d/backend
+cd ~/multi-agent-orchestration/backend
 python3.11 -m venv venv
 source venv/bin/activate
 
@@ -276,7 +276,7 @@ python3.11 -c "import main" && echo "✅ Backend OK"
 ### 4. Set up the frontend
 
 ```bash
-cd ~/multi-agent-3d/frontend
+cd ~/multi-agent-orchestration/frontend
 npm create vite@latest . -- --template react
 npm install
 npm install three @react-three/fiber @react-three/drei
@@ -291,12 +291,12 @@ Open **3 separate terminal tabs**:
 ollama serve
 
 # Terminal 2 — Backend
-cd ~/multi-agent-3d/backend
+cd ~/multi-agent-orchestration/backend
 source venv/bin/activate
 PYTHONWARNINGS=ignore uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 # Terminal 3 — Frontend
-cd ~/multi-agent-3d/frontend
+cd ~/multi-agent-orchestration/frontend
 npm run dev
 ```
 
@@ -519,7 +519,7 @@ Config is saved to `fs_config.json` and reloaded on every backend restart. macOS
 
 ```bash
 # Inside the backend venv
-source ~/multi-agent-3d/backend/venv/bin/activate
+source ~/multi-agent-orchestration/backend/venv/bin/activate
 
 pip install duckduckgo-search   # general search + news
 pip install yfinance             # live stock prices
@@ -896,7 +896,7 @@ All endpoints on `http://localhost:8000`:
 
 Always activate the virtual environment first. On macOS, `pip` is not on PATH globally:
 ```bash
-cd ~/multi-agent-3d/backend
+cd ~/multi-agent-orchestration/backend
 source venv/bin/activate
 pip install duckduckgo-search yfinance
 ```
@@ -986,7 +986,7 @@ ollama pull gemma2:2b    # 1.6 GB — lightest capable option
 
 ### Three.js canvas blank
 ```bash
-cd ~/multi-agent-3d/frontend
+cd ~/multi-agent-orchestration/frontend
 rm -rf node_modules/.vite && npm run dev
 ```
 
@@ -1001,12 +1001,12 @@ rm -rf node_modules/.vite && npm run dev
 ollama serve
 
 # Terminal 2
-cd ~/multi-agent-3d/backend
+cd ~/multi-agent-orchestration/backend
 source venv/bin/activate
 PYTHONWARNINGS=ignore uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 # Terminal 3
-cd ~/multi-agent-3d/frontend
+cd ~/multi-agent-orchestration/frontend
 npm run dev
 
 # ── Stop all ──────────────────────────────────────────────────────
@@ -1014,7 +1014,7 @@ pkill uvicorn ; pkill ollama
 # Ctrl+C in the frontend terminal
 
 # ── Install all optional dependencies ─────────────────────────────
-cd ~/multi-agent-3d/backend && source venv/bin/activate
+cd ~/multi-agent-orchestration/backend && source venv/bin/activate
 pip install duckduckgo-search          # web search + news
 pip install yfinance                   # live stock prices
 pip install "python-telegram-bot==20.7" # Telegram bot

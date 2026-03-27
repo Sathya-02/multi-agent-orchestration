@@ -33,7 +33,7 @@ ollama pull nomic-embed-text   # for RAG/Knowledge Base (274 MB)
 ### Backend setup
 
 ```bash
-cd multi-agent-3d/backend
+cd multi-agent-orchestration/backend
 
 # Create virtual environment
 python3.11 -m venv venv
@@ -61,7 +61,7 @@ python3.11 -c "import main; print('✅ Backend OK')"
 ### Frontend setup
 
 ```bash
-cd multi-agent-3d/frontend
+cd multi-agent-orchestration/frontend
 npm install
 ```
 
@@ -74,12 +74,12 @@ Open **3 terminal tabs**:
 ollama serve
 
 # Tab 2 — Backend
-cd multi-agent-3d/backend
+cd multi-agent-orchestration/backend
 source venv/bin/activate
 PYTHONWARNINGS=ignore uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 # Tab 3 — Frontend
-cd multi-agent-3d/frontend
+cd multi-agent-orchestration/frontend
 npm run dev
 ```
 
@@ -99,7 +99,7 @@ Or use the shortcut: `make dev` (from the project root)
 ### Quick start
 
 ```bash
-cd multi-agent-3d
+cd multi-agent-orchestration
 
 # Copy env template
 cp .env.example .env
@@ -141,11 +141,11 @@ docker compose down
 
 ```bash
 # 1. Copy project to server
-scp -r multi-agent-3d user@your-server:/app/multi-agent-3d
+scp -r multi-agent-orchestration user@your-server:/app/multi-agent-orchestration
 
 # 2. SSH into server
 ssh user@your-server
-cd /app/multi-agent-3d
+cd /app/multi-agent-orchestration
 
 # 3. Create cloud env file
 cp .env.cloud.example .env.cloud

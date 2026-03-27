@@ -16,6 +16,6 @@
       "summariser",
       "calculator"
     ],
-    "skills_file": "/Users/openclaw/multi-agent-3d/backend/agents/custom_agent/SKILLS.md"
+    "skills_file": "/Users/openclaw/multi-agent-orchestration/backend/agents/custom_agent/SKILLS.md"
   }
 ]
