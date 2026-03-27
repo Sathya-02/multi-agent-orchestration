@@ -23,6 +23,59 @@ from contextlib import redirect_stdout
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from tools import MathTool  # re-use your existing calculator tool
+
+_SIMPLE_EXPR_RE = re.compile(
+    r"^[0-9\s\+\-\*/\.\(\)^%sqrtlogpiecosintanabsround,]+$", re.IGNORECASE
+)
+
+def _maybe_handle_simple_math(topic: str, mode: str, job_id: str) -> bool:
+    """
+    If this is a very simple math query in quick-query mode, answer it
+    synchronously using MathTool instead of running a full Crew.
+    Returns True if handled.
+    """
+    if mode != "query":
+        return False
+    expr = topic.strip()
+    # Very short, tool-friendly expression only
+    if len(expr) > 64:
+        return False
+    if not _SIMPLE_EXPR_RE.match(expr):
+        return False
+
+    tool = MathTool()
+    result = tool._run(expression=expr)
+
+    jobs[job_id]["status"] = "done"
+    jobs[job_id]["result"] = result
+    jobs[job_id]["filename"] = ""
+    jobs[job_id]["format"] = "text/plain"
+
+    # Mimic normal job events so the UI stays in sync
+    sync_broadcast({
+        "type": "job_status",
+        "job_id": job_id,
+        "status": "running",
+        "topic": topic,
+        "mode": mode,
+        "model": get_active_model(),
+    })
+    sync_broadcast({
+        "type": "agent_activity",
+        "agent": "coordinator",
+        "label": _label("coordinator"),
+        "message": f"Direct calculator answer: {result[:120]}",
+        "ts": time.time(),
+    })
+    sync_broadcast({
+        "type": "job_done",
+        "job_id": job_id,
+        "result": result,
+        "filename": "",
+        "format": "txt",
+    })
+    return True
 
 # ── Settings — must be imported before any subsystem ──────────────────────
 from settings import (
@@ -354,6 +407,38 @@ def run_crew_sync(job_id: str, topic: str, mode: str = "research",
         agents = build_agents()
         tasks  = build_tasks(topic, agents, mode=mode, uploaded_files=uploaded_files)
 
+        # Tag each pipeline stage with the correct agent ID so the frontend
+        # can show which avatar is currently speaking.
+        def _agent_id_for(agent_obj) -> str:
+            for aid, a in agents.items():
+                if a is agent_obj:
+                    return aid
+            return "system"
+
+        stage_labels = {
+            "coordinator": "Planning research questions…",
+            "researcher":  "Gathering evidence from tools & web…",
+            "analyst":     "Analysing findings and risks…",
+            "writer":      "Drafting final report…",
+        }
+
+        for idx, task in enumerate(tasks, start=1):
+            aid = _agent_id_for(task.agent)
+            # Short, readable message for the activity feed
+            msg = stage_labels.get(
+                aid,
+                f"Running task {idx}: {str(task.description)[:120]}…",
+            )
+            sync_broadcast({
+                "type": "agent_activity",
+                "agent": aid,
+                "label": _label(aid),
+                "message": msg,
+                "phase": aid in ("coordinator", "researcher", "analyst", "writer"),
+                "task_result": False,
+                "ts": time.time(),
+            })
+
         capture = StreamCapture("system")
         crew    = Crew(
             agents  = list(agents.values()),
@@ -506,6 +591,10 @@ class JobRequest(BaseModel):
 def create_job(req: JobRequest):
     job_id = str(uuid.uuid4())[:8]
     jobs[job_id] = {"status": "queued", "topic": req.topic, "result": None}
+    # Fast path: simple maths in quick-query mode
+    if _maybe_handle_simple_math(req.topic, req.mode, job_id):
+        return {"job_id": job_id, "status": "done", "fast_path": "math"}
+        
     t = threading.Thread(
         target=run_crew_sync,
         args=(job_id, req.topic, req.mode, req.uploaded_files),

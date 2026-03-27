@@ -1,0 +1,104 @@
+from pathlib import Path
+
+# Load original App.jsx
+p = Path('work/App.jsx')
+text = p.read_text()
+
+insert_after = "const handleDeleteAgent = async (id) => {\n    await fetch(`${API_URL}/agents/${id}`, { method:'DELETE' })\n    await fetchAgents()\n  }\n\n"
+
+if insert_after not in text:
+    raise SystemExit('Marker not found in App.jsx; structure changed')
+
+insertion = '''const handleOpenSkills = async (agent) => {
+    setSkillsAgentId(agent.id)
+    setSkillsText('')
+    setAgentTab('skills')
+    setShowAgentEditor(True)
+    try:
+      const d = await fetch(`${API_URL}/agents/${agent.id}/skills`).then(r => r.json())
+      setSkillsText(d.content || '')
+    } catch {
+      setSkillsText('# Failed to load SKILLS.md')
+    }
+  }
+
+  const handleToggleActive = async (agent) => {
+    const ep = agent.active === false ? 'activate' : 'deactivate'
+    await fetch(`${API_URL}/agents/${agent.id}/${ep}`, { method: 'POST' })
+    await fetchAgents()
+  }
+
+  const handleSaveSkills = async () => {
+    if (!skillsAgentId) return
+    setSkillsSaving(true)
+    try {
+      await fetch(`${API_URL}/agents/${skillsAgentId}/skills`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: skillsText }),
+      })
+      addLog('system', '⚙️ System', `📄 SKILLS.md saved for ${skillsAgentId}`)
+      await fetchAgents()
+    } catch {
+      addLog('system', '⚙️ System', `❌ Failed to save SKILLS.md for ${skillsAgentId}`)
+    } finally {
+      setSkillsSaving(false)
+    }
+  }
+
+  '''
+
+# The above insertion is JS/JSX but written as a Python triple-quoted string; however I accidentally used Python True
+# Fix: write proper JS version instead
+insertion = '''const handleOpenSkills = async (agent) => {
+    setSkillsAgentId(agent.id)
+    setSkillsText('')
+    setAgentTab('skills')
+    setShowAgentEditor(true)
+    try {
+      const d = await fetch(`${API_URL}/agents/${agent.id}/skills`).then(r => r.json())
+      setSkillsText(d.content || '')
+    } catch {
+      setSkillsText('# Failed to load SKILLS.md')
+    }
+  }
+
+  const handleToggleActive = async (agent) => {
+    const ep = agent.active === false ? 'activate' : 'deactivate'
+    await fetch(`${API_URL}/agents/${agent.id}/${ep}`, { method: 'POST' })
+    await fetchAgents()
+  }
+
+  const handleSaveSkills = async () => {
+    if (!skillsAgentId) return
+    setSkillsSaving(true)
+    try {
+      await fetch(`${API_URL}/agents/${skillsAgentId}/skills`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: skillsText }),
+      })
+      addLog('system', '⚙️ System', `📄 SKILLS.md saved for ${skillsAgentId}`)
+      await fetchAgents()
+    } catch {
+      addLog('system', '⚙️ System', `❌ Failed to save SKILLS.md for ${skillsAgentId}`)
+    } finally {
+      setSkillsSaving(false)
+    }
+  }
+
+  '''
+
+new_text = text.replace(insert_after, insert_after + insertion)
+
+out_dir = Path('output')
+out_dir.mkdir(exist_ok=True)
+(out_dir / 'App.jsx').write_text(new_text)
+
+# Also create a unified diff patch
+import difflib
+patch = '\n'.join(difflib.unified_diff(text.splitlines(), new_text.splitlines(),
+                                       fromfile='App.jsx.orig', tofile='App.jsx.fixed', lineterm=''))
+(out_dir / 'app-agents-fix.patch').write_text(patch)
+
+print('Wrote output/App.jsx and output/app-agents-fix.patch')

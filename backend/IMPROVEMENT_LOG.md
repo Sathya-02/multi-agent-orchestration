@@ -89,3 +89,39 @@
 - Best practices updated: True
 - Auto-applied changes: 0
 - Proposals written: 0
+
+## Cycle: 2026-03-27 23:32
+- Best practices updated: True
+- Auto-applied changes: 0
+- Proposals written: 0
+
+## Cycle: 2026-03-27 23:53
+- Best practices updated: True
+- Auto-applied changes: 3
+- Proposals written: 0
+
+### Changes applied:
+- Agent 'researcher' goal updated (confidence=95%): This is better because it specifies 'specific research objectives' which aligns with coordinator’s role, and emphasizes source diversity for robustness in data curation. It also highlights prioritizing high-quality sources to ensure relevance and reliability of the datasets.
+- Agent 'analyst' goal updated (confidence=98%): This is better because it specifies 'research questions' which aligns with the coordinator’s role, and emphasizes using 'advanced analytical models', indicating a higher level of sophistication in analysis. It also ensures findings are accessible to non-expert readers.
+- Agent 'writer' goal updated (confidence=97%): This is better because it specifies 'research objectives' which aligns with the coordinator’s role, emphasizes clarity and structure in reporting findings to make them accessible to a broader audience. It also suggests using clear language and visual representations for complex data.
+
+## Cycle: 2026-03-28 00:03
+- Best practices updated: False
+- Auto-applied changes: 0
+- Proposals written: 0
+
+## Cycle: 2026-03-28 00:16
+- Best practices updated: True
+- Auto-applied changes: 1
+- Proposals written: 0
+
+### Changes applied:
+- Agent 'researcher' goal updated (confidence=95%): The suggested goal is clearer as it specifies 'comprehensive coverage' and emphasizes quality alongside relevance. It also directly links dataset curation with a specific research objective, which aligns the agent’s work more closely to our needs.
+
+## Cycle: 2026-03-28 00:20
+- Best practices updated: True
+- Auto-applied changes: 1
+- Proposals written: 0
+
+### Changes applied:
+- Agent 'researcher' goal updated (confidence=95%): The suggested goal is more focused as it specifies the aspect being studied ('climate change and its impact on marine biodiversity') which allows for targeted research. It also clarifies that accuracy takes precedence over quantity to ensure reliability of information, aligning with a data researcher's expertise.
