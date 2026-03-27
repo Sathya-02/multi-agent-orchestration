@@ -264,7 +264,8 @@ export default function App() {
   const fetchTools = async () => {
     try {
       const d = await fetch(`${API_URL}/tools`).then(r => r.json())
-      if (d.tools) setTools(d.tools)
+      const list = Array.isArray(d) ? d : (d.tools || [])
+      setTools(list)
     } catch {}
   }
 
