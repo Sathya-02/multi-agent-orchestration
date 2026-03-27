@@ -2325,8 +2325,25 @@ function StatCard({ label, value, sub, pct, color }) {
 }
 
 function fileIcon(name) {
-  const ext = name.split('.').pop()?.toLowerCase()
-  return {pdf:'📄',docx:'📝',txt:'📃',csv:'📊',xlsx:'📊',json:'📋',md:'📝',log:'📃',png:'🖼️',jpg:'🖼️'}[ext] || '📎'
+  if (!name || typeof name !== 'string') {
+    return '📎'
+  }
+
+  const parts = name.split('.')
+  const ext = parts.length > 1 ? parts.pop().toLowerCase() : ''
+
+  return {
+    pdf:  '📄',
+    docx: '📝',
+    txt:  '📃',
+    csv:  '📊',
+    xlsx: '📊',
+    json: '📋',
+    md:   '📝',
+    log:  '📃',
+    png:  '🖼️',
+    jpg:  '🖼️',
+  }[ext] || '📎'
 }
 function formatBytes(b) {
   if (b < 1024) return `${b} B`
