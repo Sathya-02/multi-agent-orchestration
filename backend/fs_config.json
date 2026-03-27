@@ -1,0 +1,14 @@
+{
+  "output_dir": "/Users/openclaw/multi-agent-orchestration",
+  "access_list": [
+    {
+      "path": "/Users/openclaw/multi-agent-orchestration",
+      "path_raw": "/Users/openclaw/multi-agent-orchestration",
+      "read": true,
+      "write": true,
+      "edit": true,
+      "label": "multi-agent-orchestration",
+      "added": 1774626012.264365
+    }
+  ]
+}

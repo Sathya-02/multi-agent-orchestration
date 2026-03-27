@@ -909,26 +909,37 @@ const handleOpenSkills = async (agent) => {
                   <span>Uploaded Files</span>
                   <span style={{color:'#475569'}}>{uploads.length} file{uploads.length>1?'s':''}</span>
                 </div>
-                {uploads.map(f => (
-                  <div key={f.filename}
-                    className={`upload-item ${selectedFiles.includes(f.filename) ? 'selected' : ''}`}
-                    onClick={() => setSelectedFiles(p =>
-                      p.includes(f.filename) ? p.filter(x=>x!==f.filename) : [...p, f.filename]
-                    )}>
-                    <span className="upload-item-icon">{fileIcon(f.filename)}</span>
-                    <div className="upload-item-info">
-                      <span className="upload-item-name">{f.filename}</span>
-                      <span className="upload-item-size">{formatBytes(f.size)}</span>
+                {uploads.map(f => {
+                  const fname = f.filename || f.name
+                  if (!fname) return null
+
+                  const isSelected = selectedFiles.includes(fname)
+
+                  return (
+                    <div key={fname}
+                      className={`upload-item ${isSelected ? 'selected' : ''}`}
+                      onClick={() => setSelectedFiles(p =>
+                        p.includes(fname) ? p.filter(x => x !== fname) : [...p, fname]
+                      )}>
+                      <span className="upload-item-icon">{fileIcon(fname)}</span>
+                      <div className="upload-item-info">
+                        <span className="upload-item-name">{fname}</span>
+                        <span className="upload-item-size">{formatBytes(f.size)}</span>
+                      </div>
+                      <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                        {isSelected && (
+                          <span className="upload-selected-badge">✓ selected</span>
+                        )}
+                        <button
+                          className="upload-delete-btn"
+                          onClick={e => { e.stopPropagation(); handleDeleteUpload(fname) }}
+                        >
+                          ✕
+                        </button>
+                      </div>
                     </div>
-                    <div style={{display:'flex',gap:6,alignItems:'center'}}>
-                      {selectedFiles.includes(f.filename) && (
-                        <span className="upload-selected-badge">✓ selected</span>
-                      )}
-                      <button className="upload-delete-btn"
-                        onClick={e => { e.stopPropagation(); handleDeleteUpload(f.filename) }}>✕</button>
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             )}
             {selectedFiles.length > 0 && (
