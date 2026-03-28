@@ -188,7 +188,7 @@ RAG_EMBED_MODEL         = os.getenv("RAG_EMBED_MODEL", "nomic-embed-text")
 RAG_CHUNK_SIZE          = int(os.getenv("RAG_CHUNK_SIZE", "400"))
 RAG_CHUNK_OVERLAP       = int(os.getenv("RAG_CHUNK_OVERLAP", "80"))
 RAG_TOP_K               = int(os.getenv("RAG_TOP_K", "4"))
-RAG_MIN_SCORE           = float(os.getenv("RAG_MIN_SCORE", "0.25"))
+RAG_MIN_SCORE           = float(os.getenv("RAG_MIN_SCORE", "0.7"))
 RAG_USE_OLLAMA_EMBED    = os.getenv("RAG_USE_OLLAMA_EMBED", "true").lower() == "true"
 
 # ─────────────────────────────────────────────────────────────────────────

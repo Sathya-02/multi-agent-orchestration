@@ -28,6 +28,11 @@ import json, re, math, time, uuid, logging
 from pathlib import Path
 from typing import Optional
 
+from settings import (
+    RAG_ENABLED, RAG_EMBED_MODEL, RAG_CHUNK_SIZE,
+    RAG_CHUNK_OVERLAP, RAG_TOP_K, RAG_MIN_SCORE, RAG_USE_OLLAMA_EMBED,
+)
+
 logger = logging.getLogger("rag_engine")
 
 # ── Paths ──────────────────────────────────────────────────────────────────
@@ -39,13 +44,13 @@ KB_DIR.mkdir(exist_ok=True)
 
 # ── Config ─────────────────────────────────────────────────────────────────
 _DEFAULT_CFG = {
-    "enabled":         True,
-    "embed_model":     "nomic-embed-text",   # Ollama embedding model
-    "chunk_size":      400,                   # chars per chunk
-    "chunk_overlap":   80,                    # overlap between chunks
-    "top_k":           4,                     # chunks returned per query
-    "min_score":       0.25,                  # min cosine similarity to include
-    "use_ollama_embed":True,                  # False = keyword fallback
+    "enabled":          RAG_ENABLED,
+    "embed_model":      RAG_EMBED_MODEL,        # Ollama embedding model
+    "chunk_size":       RAG_CHUNK_SIZE,         # chars per chunk
+    "chunk_overlap":    RAG_CHUNK_OVERLAP,      # overlap between chunks
+    "top_k":            RAG_TOP_K,              # chunks returned per query
+    "min_score":        RAG_MIN_SCORE,          # ← from settings, not hardcoded
+    "use_ollama_embed": RAG_USE_OLLAMA_EMBED,   # False = keyword fallback
 }
 
 
@@ -376,7 +381,7 @@ def retrieve(query: str, top_k: int = None,
 
     cfg   = load_kb_config()
     top_k = top_k or int(cfg.get("top_k", 4))
-    min_s = float(cfg.get("min_score", 0.25))
+    min_s = float(cfg.get("min_score", RAG_MIN_SCORE))
 
     q_vec = _get_embedding(query, cfg)
 

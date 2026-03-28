@@ -142,6 +142,11 @@ export default function App() {
   const activeTimer = useRef(null)
   const statsTimer  = useRef(null)
 
+  const [ragQuery,   setRagQuery]   = useState('')
+  const [ragTopK,    setRagTopK]    = useState(4)
+  const [ragLoading, setRagLoading] = useState(false)
+  const [ragResult,  setRagResult]  = useState(null)
+
   /* ── Init ─────────────────────────────────────────────── */
   useEffect(() => {
     fetchModels(); fetchUploads(); fetchAgents(); fetchSpawnSettings(); fetchFsConfig(); fetchTools(); fetchToolSpawns(); fetchTelegramConfig(); fetchSiConfig(); fetchWsConfig(); fetchKbEntries(); fetchKbConfig()
@@ -578,6 +583,26 @@ export default function App() {
       const d = await fetch(`${API_URL}/kb/search?q=${encodeURIComponent(kbSearchQ)}`).then(r=>r.json())
       setKbSearchResult(d.result || d.error)
     } catch(e) { setKbSearchResult(`Error: ${e}`) } finally { setKbSearching(false) }
+  }
+
+  // Handler function
+  const handleRagQuery = async () => {
+    if (!ragQuery.trim()) return
+    setRagLoading(true)
+    setRagResult(null)
+    try {
+      const res = await fetch(`${API_URL}/kb/query`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: ragQuery, top_k: ragTopK }),
+      })
+      const data = await res.json()
+      setRagResult(data)
+    } catch (e) {
+      console.error("RAG query failed", e)
+    } finally {
+      setRagLoading(false)
+    }
   }
 
   const handleSetOutputDir = async () => {
@@ -1925,7 +1950,7 @@ const handleOpenSkills = async (agent) => {
 
           {/* Tabs */}
           <div className="agent-tabs">
-            {[['browse','🗂 Browse'],['add','➕ Add Documents'],['search','🔍 Test Search'],['config','⚙️ Config']].map(([id,label]) => (
+            {[['browse','🗂 Browse'],['add','➕ Add Documents'],['search','🔍 Test Search'],['query','🤖 RAG Query'],['config','⚙️ Config']].map(([id,label]) => (
               <button key={id} className={`agent-tab ${kbTab===id?'active':''}`}
                 onClick={() => setKbTab(id)}>
                 {label}
@@ -2071,6 +2096,89 @@ const handleOpenSkills = async (agent) => {
               )}
             </div>
           )}
+
+        {/* ── RAG Query Tab ─────────────────── */}
+        {kbTab === 'query' && (
+          <div className="agent-form" style={{gap:16}}>
+            <div className="settings-section-desc">
+              Query your documents directly — answer generated strictly from the knowledge base, no agents, no web search.
+            </div>
+
+            <div className="form-group">
+              <label>Your question</label>
+              <textarea
+                rows={3}
+                value={ragQuery}
+                onChange={e => setRagQuery(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && e.metaKey && handleRagQuery()}
+                placeholder="Ask something about your documents…"
+                style={{fontFamily:'var(--mono)',fontSize:12,lineHeight:1.5,resize:'vertical'}}
+              />
+            </div>
+
+            <div style={{display:'flex',gap:8,alignItems:'center'}}>
+              <label style={{fontSize:12,color:'var(--tx-secondary)',whiteSpace:'nowrap'}}>Top-K chunks</label>
+              <input
+                type="number" min={1} max={10}
+                value={ragTopK}
+                onChange={e => setRagTopK(Number(e.target.value))}
+                style={{width:60}}
+              />
+              <button
+                className="run-btn"
+                style={{marginLeft:'auto',padding:'8px 18px'}}
+                onClick={handleRagQuery}
+                disabled={ragLoading || !ragQuery.trim()}>
+                {ragLoading ? '⟳ Querying…' : '🔍 Query RAG'}
+              </button>
+            </div>
+
+            {ragResult && (
+              <>
+                {/* Answer block */}
+                <div style={{background:'rgba(99,102,241,.08)',border:'1px solid rgba(99,102,241,.25)',
+                  borderRadius:8,padding:'12px 14px'}}>
+                  <div style={{fontSize:11,fontWeight:600,color:'#a5b4fc',marginBottom:8,textTransform:'uppercase',letterSpacing:'.5px'}}>
+                    Answer
+                  </div>
+                  <div style={{fontSize:13,color:'var(--tx-primary)',lineHeight:1.7,whiteSpace:'pre-wrap'}}>
+                    {ragResult.answer}
+                  </div>
+                  <div style={{fontSize:10,color:'var(--tx-muted)',marginTop:8}}>
+                    {ragResult.duration_ms}ms · {ragResult.chunks?.length || 0} chunk{ragResult.chunks?.length !== 1 ? 's' : ''} used · model: {ragResult.model}
+                  </div>
+                </div>
+
+                {/* Source chunks */}
+                {ragResult.chunks?.length > 0 && (
+                  <div>
+                    <div style={{fontSize:11,fontWeight:600,color:'var(--tx-secondary)',marginBottom:6,textTransform:'uppercase',letterSpacing:'.5px'}}>
+                      Source chunks
+                    </div>
+                    {ragResult.chunks.map((c, i) => (
+                      <div key={i} style={{background:'rgba(15,23,42,.5)',border:'1px solid var(--bd-subtle)',
+                        borderRadius:6,padding:'8px 10px',marginBottom:6}}>
+                        <div style={{fontSize:10,color:'#6ee7b7',marginBottom:4}}>
+                          📄 {c.source} · chunk {c.chunk_index} · {Math.round(c.score * 100)}% match
+                        </div>
+                        <pre style={{fontFamily:'var(--mono)',fontSize:10.5,color:'var(--tx-secondary)',
+                          lineHeight:1.6,whiteSpace:'pre-wrap',wordBreak:'break-word',margin:0}}>
+                          {c.text}
+                        </pre>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {ragResult.chunks?.length === 0 && (
+                  <div style={{fontSize:12,color:'var(--tx-muted)',fontStyle:'italic'}}>
+                    No relevant chunks found above the min_score threshold.
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
 
           {/* ── Config Tab ────────────────────────── */}
           {kbTab === 'config' && (

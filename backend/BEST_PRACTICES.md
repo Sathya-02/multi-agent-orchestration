@@ -1,30 +1,26 @@
 # Best Practices — Multi-Agent Orchestration
-## Last updated: 2026-03-28 00:20
+## Last updated: 2026-03-28 16:02
 
-Based on the recent job activity and performance of various agents within our multi-agent research platform, we've identified key best practices to enhance efficiency, accuracy, and overall productivity. Below are actionable recommendations for improving agent goals and tool descriptions based on observed patterns in task completion rates and model efficiencies:
+Based on the recent activity within our multi-agent research platform, we have identified key best practices to enhance efficiency and productivity. Below are actionable recommendations for improving agent goals, tool descriptions based on observed patterns in task completion rates and model efficiencies as well as suggestions for improvements:
 
-### 1. Align Agent Roles with Skills Set and Task Types
-- **Recommendation**: Clearly define the primary role of each agent to ensure that their skills are optimally utilized for specific tasks within our research projects, such as having Data Researchers focus solely on dataset curation while Report Writers concentrate on translating data into accessible reports. This alignment will minimize task-switching and improve overall performance efficiency.
+### 1. Integrate Automated Consistency Checkers within Workflow (Data Researcher)
+**Pattern Observed**: Non-specialized agents led to errors during data analysis tasks, indicating a need for immediate feedback mechanisms on dataset accuracy post curation and pre-analysis phase as observed in recent job activities involving chemical industry trends research. 
 
-### 2. Implement Iterative Feedback Loops for Dataset Curation Accuracy
-- **Recommendation**: Establish a protocol where Data Researchers regularly update the team on inconsistencies found during data curation, which should be addressed promptly by these researchers before any analysis is conducted. This iterative feedback loop will enhance dataset quality and reliability for subsequent analytical tasks.
+**Recommendation**: Integrate an automated consistency checker within the workflow immediately after `fs_read_file` tool usage, which will flag discrepancies right away to maintain high data quality standards and reduce manual oversight needs effectively demonstrated by specialized agents like Data Researcher.
 
-### 3. Enhance Report Writer Tools with Visual Data Representation Capabilities
-- **Recommendation**: Integrate visual data representation tools within the capabilities of our Report Writers to include graphical summaries such as charts or infographics in reports, making complex information more accessible for all stakeholders. This will improve comprehension and engagement with research findings among non-expert readers.
+### 2. Enhance Report Writing Tools with Visual Representations (Report Writer)
+**Pattern Observed**: Reports containing charts, graphs, and visual summaries were well-received for better comprehension among non-expert readers as seen in recent job activities where such reports facilitated quicker assimilation of complex information. 
 
-### 4. Optimize Web Search Accuracy through Contextual Filters
-- **Recommendation**: Implement context-specific filters in our built-in web search tool to allow Research Coordinators and Data Analysts to specify the type of current events or data they are interested in, such as focusing on chemical industry trends. This will streamline searches towards more relevant sources for research purposes and improve overall efficiency.
+**Recommendation**: Enhance or integrate a new Report Writer agent capable of generating direct visual representations within the report writing process itself, improving understanding similar to how Summariser has been effective for summarizing content into bullet points as observed when reports with such features were used recently.
 
-### 5. Simplify Report Writing by Incorporating Visual Representations Directly into Tools
-- **Recommendation**: Request that our tools, specifically the Summariser tool, be enhanced to generate visual representations directly from analyzed data sets when appropriate. This will facilitate a more efficient reporting process and ensure reports are not only informative but also visually engaging for readers of varying expertise levels.
+### 3. Develop an Automated Intelligent Delegation Protocol (Research Coordinator)
+**Pattern Observed**: The Research Coordinator efficiently delegates tasks by considering workload balance and specialized agent availability, leading to high-quality outputs in complex analytical jobs as seen during recent job activities involving chemical industry trends research where a focused filter improved search efficiency using `web_search`.
 
-### 6. Optimize Tool Usage with Context-Specific Functionalities in File Handling Tools
-- **Recommendation**: Provide functionality within our FS Read File and List Directory tools that allows agents to quickly identify file types or data formats relevant for their tasks, such as distinguishing between CSV and DOCX files. This will expedite the initial setup phases of research projects when dealing with large datasets.
+**Recommendation**: Develop an automated intelligent delegation protocol within the Research Coordinator role that suggests specialized agents for specific tasks based on current workload and skill sets. This will streamline task assignment as effectively demonstrated by complex analytical jobs managed through dynamic delegation informed by agent capabilities like Data Analyser.
 
-### 7. Encourage Delegation within Research Coordinator's Scope
-- **Recommendation**: Allow our Research Coordinator agent more freedom in delegating subtasks to specialized agents, such as Data Analysts or Report Writers based on their expertise and current workload. This will help distribute tasks efficiently while maintaining high standards for data analysis and reporting across the team.
+### 4. Establish Regular Tool Performance Metrics Reviews (Overall System)
+**Pattern Observed**: While the Summariser tool performs well, there is potential to improve other tools based on feedback patterns related to their usage contexts or specific functionalities required during tasks as seen when focused filters improved search efficiency. 
 
-### 8. Regularly Review Tool Performance Metrics Against Job Completion Rates and Agent Feedback
-- **Recommendation**: Implement a system to regularly assess tool performance based on actual usage patterns, success in task completions, and user satisfaction ratings from agents involved directly with these tools' application within their workflows. This data will inform future enhancements for both agent goals and tool development priorities.
+**Recommendation**: Establish regular reviews of tool performance metrics against actual job completion rates and successes informed by direct user satisfaction ratings from Research Coordinators, Data Analysts, Report Writers involved in recent jobs to prioritize enhancements for tools like `web_search`. This will ensure that the system evolves based on practical feedback as effectively demonstrated when focused filters improved search efficiency.
 
-By adopting these best practices into our multi-agent orchestration system, we can expect to see improvements in the efficiency of research projects, higher quality outputs from each phase (data curation through reporting), and an overall more harmonious working environment that leverages specialized skills effectively within defined roles.
+By adopting these best practices into our multi-agent orchestration system, we can expect improvements not only in research project efficiencies but also across all phases from data curation through reporting while leveraging specialized skills within defined roles and tasks based on recent job activities with active agents involved.
