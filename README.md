@@ -261,7 +261,7 @@ pip install requests psutil pypdf python-docx openpyxl
 
 # Optional packages — install as needed
 pip install duckduckgo-search          # general web search + news
-pip install yfinance                   # live stock prices (Yahoo Finance)
+pip install yfinance                   # live stock prices
 pip install "python-telegram-bot==20.7" # Telegram bot
 
 # Fix CrewAI telemetry compatibility (pkg_resources on Python 3.11)
@@ -329,7 +329,7 @@ Open **http://localhost:5173** in your browser.
 
 ### Quick Query Mode — Real-Time Data
 
-`💬 Quick Query` mode routes to a single agent that calls tools directly. Queries containing real-time keywords are automatically detected and the agent is instructed to call `web_search` before answering.
+`💬 Quick Query` mode routes to a single agent that calls tools directly. Very simple arithmetic expressions (like `1+2` or `12 * 7`) use a backend fast path that calls the `calculator` tool directly without running the full multi-agent Crew, so answers are near-instant.
 
 **Examples that trigger live data fetch:**
 ```
@@ -726,7 +726,7 @@ Use **🔄 Run Now** in Settings to trigger immediately. View output in the **�
 
 | Agent | Role | Avatar | Tools | Responsibility |
 |-------|------|--------|-------|----------------|
-| 🎯 Coordinator | Research Coordinator | Silver humanoid, cyan visor | `web_search`, `request_new_agent` | Scopes problem into 3 research questions, can spawn new agents |
+| 🎯 Coordinator | Research Coordinator | Silver humanoid, cyan visor | `web_search`, `knowledge_base_search`, `calculator`, `request_new_agent`, `request_new_tool` | Scopes problem into 3 research questions, decides between direct tool calls vs full pipeline, and can spawn new agents/tools |
 | 🔍 Researcher | Data Researcher | Heavy rust industrial robot | `web_search`, `knowledge_base_search`, `summariser`, `read_uploaded_file`, `calculator` | Gathers live data, searches KB, reads files, handles maths |
 | 📊 Analyst | Data Analyst | Teal armoured robot | `data_analyser`, `knowledge_base_search`, `summariser`, `read_uploaded_file`, `calculator` | Identifies top 3 insights, flags risks, scores confidence |
 | ✍️ Writer | Report Writer | Friendly white/yellow robot | `summariser` | Produces final structured report in chosen format with metadata footer |
