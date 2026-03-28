@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "embed_model": "mxbai-embed-large",
+  "chunk_size": 400,
+  "chunk_overlap": 80,
+  "top_k": 1,
+  "min_score": 0.7,
+  "use_ollama_embed": true
+}

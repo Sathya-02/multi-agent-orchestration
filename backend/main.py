@@ -24,6 +24,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 from tools import MathTool  # re-use your existing calculator tool
+from settings import (
+    RAG_ENABLED, RAG_EMBED_MODEL, RAG_CHUNK_SIZE,
+    RAG_CHUNK_OVERLAP, RAG_TOP_K, RAG_MIN_SCORE, RAG_USE_OLLAMA_EMBED,
+)
 
 _SIMPLE_EXPR_RE = re.compile(
     r"^[0-9\s\+\-\*/\.\(\)^%sqrtlogpiecosintanabsround,]+$", re.IGNORECASE
@@ -137,6 +141,7 @@ if RAG_ENABLED:
         load_kb_config, save_kb_config, get_all_entries, get_entry_count,
         delete_entry, delete_source, clear_store, list_sources,
         ingest_file, ingest_text, search as kb_search, _load_store, KB_DIR,
+        query_rag,
     )
 
 if FILESYSTEM_ENABLED:
@@ -813,9 +818,13 @@ if RAG_ENABLED:
         text: str; source_name: str; tags: list[str] = []
 
     class KBConfig(BaseModel):
-        enabled: bool = True; embed_model: str = "nomic-embed-text"
-        chunk_size: int = 400; chunk_overlap: int = 80
-        top_k: int = 4; min_score: float = 0.25; use_ollama_embed: bool = True
+        enabled: bool          = RAG_ENABLED
+        embed_model: str       = RAG_EMBED_MODEL
+        chunk_size: int        = RAG_CHUNK_SIZE
+        chunk_overlap: int     = RAG_CHUNK_OVERLAP
+        top_k: int             = RAG_TOP_K
+        min_score: float       = RAG_MIN_SCORE
+        use_ollama_embed: bool = RAG_USE_OLLAMA_EMBED
 
     @app.get("/kb/config")
     def get_kb_config(): return load_kb_config()
@@ -863,6 +872,17 @@ if RAG_ENABLED:
     def kb_search_query(q: str = ""):
         if not q: raise HTTPException(status_code=400, detail="Provide ?q=")
         return {"query": q, "result": kb_search(q)}
+
+    class KBQueryRequest(BaseModel):
+        query: str
+        top_k: int = None   # None = use config default
+
+    @app.post("/kb/query")
+    def kb_query(req: KBQueryRequest):
+        if not req.query.strip():
+            raise HTTPException(status_code=400, detail="Query cannot be empty")
+        result = query_rag(req.query, top_k=req.top_k)
+        return result
 
 
 # ── Web Search ────────────────────────────────────────────────────────────
