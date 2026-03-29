@@ -70,17 +70,13 @@ body{
     height:100vh;
     min-height:unset;
   }
-  /* Canvas sits in col 1, row 2 — auto-placement handles this */
-  .canvas-area{
-    min-height:unset;
-  }
-  /* KEY FIX: explicitly place side-panel in column 2, row 2 */
+  .canvas-area{ min-height:unset; }
   .side-panel{
     grid-column:2;
     grid-row:2;
-    /* restore desktop font sizes WITHOUT the cascading * rule */
     font-size:13px;
     line-height:1.4;
+    overflow-y:auto;
   }
 }
 
@@ -221,18 +217,17 @@ body{
 .phase-step.active .phase-name{color:#2255cc;animation:blink 1.3s infinite}
 .phase-step.done .phase-name{color:#16883a}
 
-/* ── Right panel ─────────────────────────────────────────────────── */
-/* Mobile default: full-width, stacked below canvas */
+/* ── Right panel (mobile default: full-width, stacked) ────────── */
 .side-panel{
   background:var(--bg-panel);
   border-left:1px solid var(--bd-subtle);
   display:flex;
   flex-direction:column;
-  overflow:hidden;
+  overflow-y:auto;
   min-width:0;
-  /* Mobile: comfortable reading size */
   font-size:16px;
   line-height:1.6;
+  color:var(--tx-primary);
 }
 
 /* ── Mode selector ─────────────────────────────────────────────── */
@@ -1210,24 +1205,57 @@ input[type="color"]{height:34px;padding:2px;cursor:pointer;border-radius:6px}
 
 /* ── Tablet (641px – 1024px) ─────────────────────────────────────── */
 @media (min-width:641px) and (max-width:1024px){
-  .app-container{
-    grid-template-rows:52px 260px auto;
-  }
-  .canvas-area{min-height:260px}
-  .side-panel{font-size:16px}
-  .header-title{font-size:18px}
-  .section-heading,.agent-role,.feed-agent-label{font-size:17px}
-  .topic-input,.run-btn,.result-text,.result-html{font-size:16px}
-  .agent-status,.feed-message{font-size:15px}
-  .feed-time,.report-file-badge,.model-card-desc{font-size:13px}
+  .app-container{ grid-template-rows:52px 260px auto; }
+  .canvas-area{ min-height:260px; }
+  .side-panel{ font-size:16px; }
+  .header-title{ font-size:18px; }
+  .section-heading,.agent-role,.feed-agent-label{ font-size:17px !important; }
+  .topic-input,.run-btn,.result-text,.result-html{ font-size:16px !important; }
+  .agent-status,.feed-message{ font-size:15px !important; }
+  .feed-time,.report-file-badge,.model-card-desc{ font-size:13px !important; }
 }
 
-/* ── Phone (≤640px) ─────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════
+   Phone (≤640px) — CONCRETE font visibility fix
+   Every hardcoded px value that was too small to read is bumped
+   up here with !important so it always wins over the base rules.
+══════════════════════════════════════════════════════════════ */
 @media (max-width:640px){
-  .app-container{
-    grid-template-rows:52px 220px auto;
+  .app-container{ grid-template-rows:52px 220px auto; }
+  .canvas-area{ min-height:220px; }
+
+  /* Panel itself — must scroll and show text */
+  .side-panel{
+    font-size:16px;
+    overflow-y:auto;
+    color:var(--tx-primary);
+    min-height:60vh;   /* guarantee panel has height on mobile */
   }
-  .canvas-area{min-height:220px}
-  .side-panel{font-size:17px}
-  .header-title,.section-heading,.agent-role,.feed-agent-label{font-size:18px}
+
+  /* ── All text classes bumped to legible sizes ── */
+  .section-heading{ font-size:14px !important; color:var(--tx-secondary) !important; }
+  .agent-role      { font-size:15px !important; color:var(--tx-primary)   !important; }
+  .agent-status    { font-size:13px !important; color:var(--tx-secondary) !important; }
+  .feed-agent-label{ font-size:13px !important; }
+  .feed-message    { font-size:14px !important; color:var(--tx-secondary) !important; }
+  .feed-time       { font-size:12px !important; color:var(--tx-hint)      !important; }
+  .feed-phase-msg  { font-size:15px !important; color:var(--tx-primary)   !important; }
+  .topic-input     { font-size:16px !important; color:var(--tx-primary)   !important; }
+  .run-btn         { font-size:16px !important; padding:12px !important; }
+  .mode-btn        { font-size:13px !important; color:var(--tx-secondary) !important; }
+  .result-text,
+  .result-html     { font-size:14px !important; color:var(--tx-secondary) !important; }
+  .report-file-badge{ font-size:12px !important; }
+  .model-card-desc { font-size:12px !important; }
+  .header-title    { font-size:15px; }
+
+  /* ── Feed section: remove min-height:0 so content shows ── */
+  .feed-section    { min-height:200px; overflow-y:visible; }
+  .feed-scroll     { min-height:180px; overflow-y:auto; }
+
+  /* ── Agent section: increase max-height for mobile ── */
+  .agents-section  { max-height:280px; }
+
+  /* ── Result section: increase max-height for mobile ── */
+  .result-section  { max-height:300px; }
 }
