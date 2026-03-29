@@ -884,6 +884,16 @@ if RAG_ENABLED:
         result = query_rag(req.query, top_k=req.top_k)
         return result
 
+    @app.get("/kb/debug")
+    def kb_debug():
+        from rag_engine import _store, KB_STORE  # import from rag_engine directly
+        return {
+            "store_path":       str(KB_STORE),
+            "store_exists":     KB_STORE.exists(),
+            "store_size_bytes": KB_STORE.stat().st_size if KB_STORE.exists() else 0,
+            "chunks_in_memory": len(_store),
+        }
+
 
 # ── Web Search ────────────────────────────────────────────────────────────
 if SEARCH_ENABLED:

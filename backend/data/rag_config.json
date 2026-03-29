@@ -4,6 +4,6 @@
   "chunk_size": 400,
   "chunk_overlap": 80,
   "top_k": 1,
-  "min_score": 0.7,
+  "min_score": 0.65,
   "use_ollama_embed": true
 }
