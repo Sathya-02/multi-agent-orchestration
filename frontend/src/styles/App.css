@@ -1203,11 +1203,36 @@ input[type="color"]{height:34px;padding:2px;cursor:pointer;border-radius:6px}
   border-color:rgba(99,102,241,.6);
 }
 
-/* ── Tablet (641px – 1024px) ─────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════
+   Tablet (641px – 1024px) — single-column stacked layout
+   Forces canvas on top, side-panel below — NO 2-column grid
+══════════════════════════════════════════════════════════════ */
 @media (min-width:641px) and (max-width:1024px){
-  .app-container{ grid-template-rows:52px 260px auto; }
-  .canvas-area{ min-height:260px; }
-  .side-panel{ font-size:16px; }
+  body{ overflow-y:auto; height:auto; }
+
+  .app-container{
+    grid-template-columns: 1fr;
+    grid-template-rows: 52px 340px auto;
+    height: auto;
+    min-height: 100vh;
+  }
+  .header   { grid-column: 1 / -1; grid-row: 1; }
+  .canvas-area{
+    grid-column: 1;
+    grid-row: 2;
+    min-height: 340px;
+  }
+  .side-panel{
+    grid-column: 1;
+    grid-row: 3;
+    font-size: 16px;
+    overflow-y: auto;
+    min-height: 60vh;
+    border-left: none;
+    border-top: 1px solid var(--bd-subtle);
+  }
+
+  /* Font scale */
   .header-title{ font-size:18px; }
   .section-heading,.agent-role,.feed-agent-label{ font-size:17px !important; }
   .topic-input,.run-btn,.result-text,.result-html{ font-size:16px !important; }
@@ -1216,20 +1241,24 @@ input[type="color"]{height:34px;padding:2px;cursor:pointer;border-radius:6px}
 }
 
 /* ══════════════════════════════════════════════════════════════
-   Phone (≤640px) — CONCRETE font visibility fix
-   Every hardcoded px value that was too small to read is bumped
-   up here with !important so it always wins over the base rules.
+   Phone (≤640px) — explicit placement + font visibility fix
 ══════════════════════════════════════════════════════════════ */
 @media (max-width:640px){
-  .app-container{ grid-template-rows:52px 220px auto; }
-  .canvas-area{ min-height:220px; }
-
-  /* Panel itself — must scroll and show text */
-  .side-panel{
+  .app-container{
+    grid-template-columns: 1fr;
+    grid-template-rows: 52px 220px auto;
+  }
+  .header     { grid-column: 1 / -1; grid-row: 1; }
+  .canvas-area{ grid-column: 1; grid-row: 2; min-height:220px; }
+  .side-panel {
+    grid-column: 1;
+    grid-row: 3;
     font-size:16px;
     overflow-y:auto;
     color:var(--tx-primary);
-    min-height:60vh;   /* guarantee panel has height on mobile */
+    min-height:60vh;
+    border-left: none;
+    border-top: 1px solid var(--bd-subtle);
   }
 
   /* ── All text classes bumped to legible sizes ── */
