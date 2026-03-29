@@ -39,21 +39,67 @@
   --danger:#ff4f6a;
 }
 
+/* ── Mobile-first base: stacked, scrollable ─────────────────── */
 body{
   font-family:var(--font);
   background:var(--bg-base);
   color:var(--tx-primary);
-  overflow:hidden;
-  height:100vh;
+  overflow-x:hidden;
+  overflow-y:auto;
+  min-height:100vh;
   -webkit-font-smoothing:antialiased;
 }
 
-/* ── Layout: 60% canvas / 40% right panel ──────────────────── */
+/* Default (mobile): single-column stacked layout */
 .app-container{
   display:grid;
-  grid-template-columns:60fr 40fr;
-  grid-template-rows:52px 1fr;
-  height:100vh;
+  grid-template-columns:1fr;
+  grid-template-rows:52px 220px auto;
+  min-height:100vh;
+  height:auto;
+}
+
+/* ── Desktop: restore the 60/40 side-by-side layout ─────────── */
+@media (min-width: 1025px) {
+  body {
+    overflow: hidden;
+    height: 100vh;
+  }
+
+  .app-container {
+    grid-template-columns: 60fr 40fr;
+    grid-template-rows: 52px 1fr;
+    height: 100vh;
+  }
+
+  .canvas-area {
+    min-height: unset;
+  }
+
+  .side-panel {
+    grid-column: unset;
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  .side-panel * {
+    font-size: inherit;
+  }
+
+  /* Restore desktop-sized text */
+  .header-title    { font-size: 14px; }
+  .section-heading,
+  .agent-role,
+  .feed-agent-label{ font-size: 11px; }
+  .topic-input,
+  .run-btn,
+  .result-text,
+  .result-html     { font-size: 12px; }
+  .agent-status,
+  .feed-message    { font-size: 12px; }
+  .feed-time,
+  .report-file-badge,
+  .model-card-desc { font-size: 10px; }
 }
 
 /* ── Header ──────────────────────────────────────────────────── */
@@ -154,6 +200,7 @@ body{
   position:relative;
   background:#f0f2f5;
   overflow:hidden;
+  min-height:220px;
 }
 .canvas-label{
   position:absolute;
@@ -200,13 +247,14 @@ body{
   flex-direction:column;
   overflow:hidden;
   min-width:0;
+  grid-column: 1 / -1;
 
-  /* Make panel text comfortably large on ALL viewports */
+  /* Mobile: comfortable reading size */
   font-size: 16px;
   line-height: 1.6;
 }
 
-/* Every child inside the panel inherits this size instead of 10–13px */
+/* Every child inside the panel inherits this size */
 .side-panel *{
   font-size: inherit;
 }
@@ -1195,22 +1243,10 @@ input[type="color"]{height:34px;padding:2px;cursor:pointer;border-radius:6px}
   border-color: rgba(99,102,241,.6);
 }
 
-/* ── Responsive layout & typography ─────────────────────────── */
-
-/* Tablet / narrow laptop */
-@media (max-width: 1024px) {
-  /* Let the page scroll */
-  body {
-    overflow: auto;
-    height: auto;
-    min-height: 100vh;
-  }
-
-  /* Stack layout: header, canvas, then panel full‑width */
+/* ── Tablet: slightly larger canvas ─────────────────────────── */
+@media (min-width: 641px) and (max-width: 1024px) {
   .app-container {
-    grid-template-columns: 1fr;
     grid-template-rows: 52px 260px auto;
-    height: auto;
   }
 
   .canvas-area {
@@ -1218,20 +1254,9 @@ input[type="color"]{height:34px;padding:2px;cursor:pointer;border-radius:6px}
   }
 
   .side-panel {
-    grid-column: 1 / -1;
-  }
-
-  /* Comfortable base size for all text in the panel */
-  .side-panel {
     font-size: 16px;
-    line-height: 1.6;
   }
 
-  .side-panel * {
-    font-size: inherit;
-  }
-
-  /* Slightly larger key labels */
   .header-title {
     font-size: 18px;
   }
@@ -1261,7 +1286,7 @@ input[type="color"]{height:34px;padding:2px;cursor:pointer;border-radius:6px}
   }
 }
 
-/* Phone portrait and very small widths */
+/* ── Phone portrait ──────────────────────────────────────────── */
 @media (max-width: 640px) {
   .app-container {
     grid-template-rows: 52px 220px auto;
