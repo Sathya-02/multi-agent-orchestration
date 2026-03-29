@@ -21,15 +21,17 @@ from rag_engine import (
 )
 from rag.config import load_kb_config, save_kb_config
 
+import logging
+logger = logging.getLogger("rag.engine")
+
 __all__ = [
     "search", "retrieve", "ingest_file", "ingest_text",
     "get_all_entries", "get_entry_count",
     "delete_entry", "delete_source", "clear_store", "list_sources",
     "format_retrieval_result", "_load_store", "KB_DIR",
     "load_kb_config", "save_kb_config",
+    "query_rag",
 ]
-
-# rag/engine.py — append at the very end
 
 def query_rag(query: str, top_k: int = None) -> dict:
     """

@@ -1,26 +1,31 @@
 # Best Practices — Multi-Agent Orchestration
-## Last updated: 2026-03-28 16:02
+## Last updated: 2026-03-29 19:30
 
-Based on the recent activity within our multi-agent research platform, we have identified key best practices to enhance efficiency and productivity. Below are actionable recommendations for improving agent goals, tool descriptions based on observed patterns in task completion rates and model efficiencies as well as suggestions for improvements:
+Based on the recent job activity and patterns observed within our multi-agent orchestration system for chemical industry trends research tasks related to marine biology impacted by climate change, here are several refined best practices. These recommendations aim at enhancing data curation protocols, visual representation tailoring, intelligent delegation of tasks, tool performance reviews, and agent skills enhancements:
 
-### 1. Integrate Automated Consistency Checkers within Workflow (Data Researcher)
-**Pattern Observed**: Non-specialized agents led to errors during data analysis tasks, indicating a need for immediate feedback mechanisms on dataset accuracy post curation and pre-analysis phase as observed in recent job activities involving chemical industry trends research. 
-
-**Recommendation**: Integrate an automated consistency checker within the workflow immediately after `fs_read_file` tool usage, which will flag discrepancies right away to maintain high data quality standards and reduce manual oversight needs effectively demonstrated by specialized agents like Data Researcher.
-
-### 2. Enhance Report Writing Tools with Visual Representations (Report Writer)
-**Pattern Observed**: Reports containing charts, graphs, and visual summaries were well-received for better comprehension among non-expert readers as seen in recent job activities where such reports facilitated quicker assimilation of complex information. 
-
-**Recommendation**: Enhance or integrate a new Report Writer agent capable of generating direct visual representations within the report writing process itself, improving understanding similar to how Summariser has been effective for summarizing content into bullet points as observed when reports with such features were used recently.
-
-### 3. Develop an Automated Intelligent Delegation Protocol (Research Coordinator)
-**Pattern Observed**: The Research Coordinator efficiently delegates tasks by considering workload balance and specialized agent availability, leading to high-quality outputs in complex analytical jobs as seen during recent job activities involving chemical industry trends research where a focused filter improved search efficiency using `web_search`.
-
-**Recommendation**: Develop an automated intelligent delegation protocol within the Research Coordinator role that suggests specialized agents for specific tasks based on current workload and skill sets. This will streamline task assignment as effectively demonstrated by complex analytical jobs managed through dynamic delegation informed by agent capabilities like Data Analyser.
-
-### 4. Establish Regular Tool Performance Metrics Reviews (Overall System)
-**Pattern Observed**: While the Summariser tool performs well, there is potential to improve other tools based on feedback patterns related to their usage contexts or specific functionalities required during tasks as seen when focused filters improved search efficiency. 
-
-**Recommendation**: Establish regular reviews of tool performance metrics against actual job completion rates and successes informed by direct user satisfaction ratings from Research Coordinators, Data Analysts, Report Writers involved in recent jobs to prioritize enhancements for tools like `web_search`. This will ensure that the system evolves based on practical feedback as effectively demonstrated when focused filters improved search efficiency.
-
-By adopting these best practices into our multi-agent orchestration system, we can expect improvements not only in research project efficiencies but also across all phases from data curation through reporting while leveraging specialized skills within defined roles and tasks based on recent job activities with active agents involved.
+### 1. Enhanced Data Curation Protocol with Domain Knowledge Integration
+- **Improvement Suggestion**: Implement advanced NLP capabilities within the Data Researcher to interpret marine biology jargon effectively in climate change impact studies on chemical industry trends, reducing manual oversight and ensuring high-quality datasets. The agent should be trained using a curated set of relevant databases for accuracy.
+  
+### 2. Tailored Visual Representations for Non-Expert Audiences
+- **Improvement Suggestion**: Equip the Report Writer with storytelling techniques to create engaging visual summaries, such as infographics and charts that resonate across diverse audience backgrounds in marine biology impacted by climate change. This will aid comprehension among non-experts.
+  
+### 3. Dynamic Intelligent Delegation Protocol for Task Allocation
+- **Improvement Suggestion**: Integrate ML algorithms into the intelligent delegation system to predict workload spikes and suggest agent pairings based on evolving skill sets, anticipating future knowledge acquisition paths within marine biology impacted by climate change. This will ensure efficient project progression during peak times or when specialized knowledge is required suddenly.
+  
+### 4. Continuous Improvement through Regular Tool Performance Reviews
+- **Improvement Suggestion**: Establish an automated feedback loop where agents can suggest improvements based on their experiences, focusing not only on user satisfaction but also job completion rates and time taken for each phase of the research project. This will ensure tools evolve to meet specific needs efficiently across different phases such as data curation, analysis, report writing in chemical industry trends research projects.
+  
+### Agent Skills Enhancement Recommendations:
+- **Data Researcher**: Advanced NLP capabilities are essential for parsing complex queries and identifying relevant case studies within marine biology impacted by climate change related to the chemical industry, ensuring comprehensive data curation that supports our specific environmental questions.
+  
+### Pattern Observation & Model Performance Analysis (not included in word count):
+- **Data Researcher**: The current system may struggle with interpreting domain-specific jargon leading to misinterpretations or incomplete datasets, particularly when complex studies are involved requiring nuanced understanding beyond general language processing capabilities. Agents trained on marine biology and chemistry databases showed better performance in curating relevant chemical industry trends data related to climate change impacts within oceanic ecosystems compared to those without specialized training.
+  
+### Agent Skills Enhancement Recommendations:
+- **Report Writer**: Training the Report Writer agent with storytelling techniques and visual design skills will make complex chemical industry trends data more relatable, particularly when presenting intricate concepts supported by engaging narratives. This skill is crucial for non-expert audiens to understand marine biology impacted by climate change within this sector effectively.
+  
+### Review Coordinator Agent Skills Enhancement:
+- **Review Coordinator**: The agent should be enhanced with capabilities that allow it not just to collect user satisfaction metrics but also analyze job completion rates and time taken for each phase of the research project, providing a more objective measure for continuous improvement efforts. This will ensure tools evolve efficiently across different phases such as data curation, analysis, report writing in chemical industry trends projects related to marine biology impacted by climate change.
+  
+### Conclusion:
+Implementing these best practices and continuously monitoring the system's performance patterns can significantly enhance our multi-agent orchestration platform for research on the effects of climate change within marine ecosystems, particularly focusing on chemical industry trends impact studies related to this sector.
