@@ -1,179 +1,207 @@
-# 🤖 Multi Agent Orchestration
+# Multi Agent Orchestration
 
-> A fully local, offline multi-agent AI system with a real-time 3D executive boardroom, live web search with stock prices, RAG knowledge base, Telegram bot control, and autonomous self-improvement — no cloud API keys required.
+> A fully local, offline multi-agent AI system with a real-time 3D executive boardroom, live web search, RAG knowledge base, Telegram bot, and autonomous self-improvement — no cloud API keys required.
 
-**CrewAI · Ollama · FastAPI · WebSockets · React 18 · Three.js · Vite · python-telegram-bot**  
-Optimized for **MacBook Air M1 8 GB** · Version **7.0.0**
-
----
-
-## What This Is
-
-Five built-in AI agents collaborate to research topics, answer questions with real-time data, analyse uploaded files, and read/write local files. Everything runs locally via Ollama. No internet connection required for the core pipeline — web search and Telegram are opt-in.
-
-The system has three major additions over the base multi-agent pattern:
-
-**🌐 Real-time Web Search** — agents automatically detect when a query needs live data (stock prices, weather, exchange rates, current date/time, news) and route to the appropriate provider — Yahoo Finance for stocks, wttr.in for weather, WorldTimeAPI for time, ExchangeRate-API for currency, DuckDuckGo for everything else. All providers require zero API keys.
-
-**📚 RAG / Knowledge Base** — upload your own documents (PDF, DOCX, TXT, CSV, JSON, HTML) and agents will search them using vector similarity before answering. Uses Ollama's `nomic-embed-text` for semantic embeddings. Falls back to keyword search if embeddings are unavailable. Results are injected into agent context automatically.
-
-**🔄 Autonomous Self-Improvement** — a background scheduler reads all agent and tool definitions, reviews recent job activity, and uses the LLM to rewrite `BEST_PRACTICES.md` and optionally update agent goals and tool descriptions — entirely hands-free.
+**Stack:** CrewAI · Ollama · FastAPI · WebSockets · React 18 · Three.js · Vite · PostgreSQL (optional, for auth)
 
 ---
 
-## 🚀 Quick Start — One-Click Setup
+## Quick Start
 
-All environments use the same `setup.sh` script at the project root.
+### Prerequisites
+
+| Tool | Version | Install |
+|------|---------|---------|
+| Python | 3.11 | `brew install python@3.11` |
+| Node.js | 20 LTS | `brew install node@20` |
+| Ollama | latest | [ollama.com/download](https://ollama.com/download) |
+
+---
+
+## Environment-Specific Setup (`setup.sh`)
+
+A single script handles all three environments. Run with one argument:
 
 ```bash
-chmod +x setup.sh          # one-time only
+./setup.sh              # defaults to local
+./setup.sh local        # local dev — Ollama auto-started, hot-reload, no API key needed
+./setup.sh dev          # dev/staging — reads .env.dev, hot-reload
+./setup.sh production   # production — gunicorn, npm build, REQUIRE_API_KEY=true
 ```
 
-### Environments
+### Per-Step Control
 
-| Command | Environment | Who it's for |
-|---|---|---|
-| `./setup.sh` | `local` (default) | Local development, Ollama, hot-reload |
-| `./setup.sh local` | local | Same as above |
-| `./setup.sh dev` | dev | Dev/staging server, mirrors production config |
-| `./setup.sh production` | production | Gunicorn, API key required, static frontend build |
+Run only specific steps by passing step names after the environment:
 
-### Run Only Specific Steps
-
-Individual steps can be combined freely:
+```bash
+./setup.sh local check           # verify tools only
+./setup.sh local venv db         # install deps + init DB (no servers)
+./setup.sh dev backend           # restart backend only
+./setup.sh production npm        # rebuild frontend static bundle
+./setup.sh production db         # re-apply schema to production DB
+```
 
 | Step | What it does |
-|---|---|
-| `check` | Verify python3.11, node, npm, psql, ollama are installed |
-| `venv` | Create Python virtualenv + install all backend deps |
-| `npm` | Install frontend npm deps (production: also runs `npm run build`) |
-| `db` | Create Postgres database + apply `backend/infra/db/init.sql` (idempotent) |
-| `ollama` | Start `ollama serve` in background if not already running |
-| `backend` | Start FastAPI (uvicorn in local/dev, gunicorn in production) |
-| `frontend` | Start Vite dev server (skipped automatically in production) |
+|------|--------------|
+| `check` | Verify Python, Node, Ollama are installed |
+| `venv` | Create/reuse Python venv, install requirements |
+| `db` | Create database and apply schema |
+| `npm` | Install frontend deps / build static bundle |
+| `ollama` | Pull default models, start Ollama server |
+| `backend` | Start FastAPI server |
+| `frontend` | Start Vite dev server (local/dev) or build (production) |
 
-**Examples:**
+### Environment Differences
 
-```bash
-# Full local setup + start everything
-./setup.sh local
-
-# Only check tools on a new machine
-./setup.sh check
-
-# Re-apply DB schema only (any env)
-./setup.sh dev db
-./setup.sh production db
-
-# Rebuild frontend static bundle for production
-./setup.sh production npm
-
-# Just restart the backend after a code change (already setup)
-./setup.sh dev backend
-
-# Multiple steps in one command
-./setup.sh local venv db
-```
-
-### Environment Files
-
-Create a `.env.<environment>` file in the project root to override defaults. The script
-loads it automatically before running any steps.
-
-| File | Used by |
-|---|---|
-| `.env.local` | `./setup.sh local` |
-| `.env.dev` | `./setup.sh dev` |
-| `.env.production` | `./setup.sh production` |
-
-**Minimal `.env.local` example:**
-```env
-DATABASE_URL=postgres:///mao_local
-MASTER_API_KEY=local-dev-key
-REQUIRE_API_KEY=false
-OLLAMA_HOST=127.0.0.1:11434
-```
-
-**Minimal `.env.production` example:**
-```env
-DATABASE_URL=postgresql://user:pass@host:5432/mao_production
-MASTER_API_KEY=change-this-to-a-real-secret
-REQUIRE_API_KEY=true
-SESSION_SECRET=32-bytes-of-random
-GOOGLE_CLIENT_ID=your-google-oauth-client-id
-GOOGLE_CLIENT_SECRET=your-google-oauth-client-secret
-GOOGLE_REDIRECT_URI=https://agents.yourdomain.com/auth/callback/google
-ALLOWED_EMAIL_DOMAINS=yourdomain.com
-ADMIN_EMAILS=you@yourdomain.com
-GUNICORN_WORKERS=4
-BACKEND_PORT=8000
-```
-
-### Environment Override Variables
-
-These can be set in your shell or `.env.*` file:
-
-| Variable | Default | Description |
-|---|---|---|
-| `MAO_DB_NAME` | `mao_<env>` | Postgres database name |
-| `DATABASE_URL` | derived | Full connection string (overrides `MAO_DB_NAME`) |
-| `BACKEND_PORT` | `8000` | uvicorn / gunicorn listen port |
-| `FRONTEND_PORT` | `5173` | Vite dev server port |
-| `OLLAMA_HOST` | `127.0.0.1:11434` | Ollama bind address |
-| `GUNICORN_WORKERS` | `2` | Number of gunicorn worker processes (production) |
+| | `local` | `dev` | `production` |
+|--|---------|-------|--------------|
+| Server | uvicorn `--reload` | uvicorn `--reload` | gunicorn + UvicornWorker |
+| `REQUIRE_API_KEY` | false | false | true |
+| Frontend | Vite dev server | Vite dev server | `npm run build` |
+| Ollama | auto-started | auto-started | skipped |
+| DB name | `mao_local` | `mao_dev` | `mao_production` |
+| Env file | `.env.local` | `.env.dev` | `.env.production` |
 
 ---
 
-## 👥 Users & Roles (Admin API)
+## Authentication & Authorisation (Google OAuth)
 
-When `REQUIRE_API_KEY=true` and a Postgres `DATABASE_URL` is configured, the backend
-exposes admin endpoints to inspect and manage registered users.
+Google OAuth login is built-in. Users sign in with their Gmail or Google Workspace account. Access is controlled by email domain and explicit allowlists.
 
-### Endpoints
+### Setup
+
+1. **Create OAuth credentials** at [Google Cloud Console](https://console.cloud.google.com/apis/credentials):
+   - Application type: **Web application**
+   - Authorised redirect URI: `http://localhost:8000/auth/callback/google` (local) or your production URL
+
+2. **Add to your `.env` / `.env.local`:**
+
+```env
+# Google OAuth
+GOOGLE_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+GOOGLE_REDIRECT_URI=http://localhost:8000/auth/callback/google
+
+# Email-based authorisation
+# Leave ALLOWED_EMAIL_DOMAINS empty to allow ANY Google account
+ALLOWED_EMAIL_DOMAINS=gmail.com,yourcompany.com
+ALLOWED_EMAILS=extra@otherdomain.com
+ADMIN_EMAILS=you@yourcompany.com
+
+# Session JWT
+SESSION_SECRET=replace-with-a-32-byte-random-secret
+SESSION_COOKIE_NAME=mao_session
+SESSION_TTL_HOURS=8
+```
+
+3. **Install auth deps:**
+   ```bash
+   pip install -r backend/requirements.txt
+   # PyJWT and psycopg2-binary are now included automatically
+   ```
+
+### Auth Endpoints
 
 | Method | Path | Description |
-|---|---|---|
-| `GET` | `/admin/users` | List all users with `id`, `email`, `name`, `plan`, `role`, `active` |
-| `PATCH` | `/admin/users/{user_id}` | Update `plan`, `role`, and/or `active` for a user |
+|--------|------|-------------|
+| `GET` | `/auth/login/google` | Redirect to Google consent screen |
+| `GET` | `/auth/callback/google` | Handle OAuth callback, set session cookie |
+| `GET` | `/auth/me` | Return current logged-in user (from cookie) |
+| `POST` | `/auth/logout` | Clear session cookie |
 
-Both endpoints require the master API key (`X-API-Key` header or `?key=`).
+### Authorisation Policy
 
-### Role values
+| `ALLOWED_EMAIL_DOMAINS` | Effect |
+|------------------------|--------|
+| *(empty)* | Any valid Google account can log in |
+| `gmail.com` | Only Gmail accounts |
+| `gmail.com,mycompany.com` | Gmail + your company Google Workspace |
+| `mycompany.com` | Company accounts only — no public Gmail |
 
-| Role | Meaning |
-|---|---|
-| `admin` | Full access, can manage agents/tools/filesystem |
-| `manager` | Run jobs + view results, no system config |
-| `user` | Run jobs only (default for new Google logins) |
-| `readonly` | View results only |
+- Users in `ADMIN_EMAILS` get `plan=enterprise` and `is_admin=True`.
+- All others get `plan=free` (upgradeable manually in Postgres).
+- API key auth continues to work for programmatic access alongside session auth.
 
-### Example
+---
+
+## Environment Files
 
 ```bash
-# List users
-curl -H "X-API-Key: $MASTER_API_KEY" http://localhost:8000/admin/users
+# Local development
+cp .env.example .env.local
 
-# Promote a user to admin
-curl -X PATCH -H "X-API-Key: $MASTER_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"role": "admin", "plan": "enterprise"}' \
-  http://localhost:8000/admin/users/<user_id>
+# Dev/staging
+cp .env.example .env.dev
+
+# Production (cloud)
+cp .env.cloud.example .env.production
+```
+
+See `.env.example` and `.env.cloud.example` for all available variables.
+
+---
+
+## Running the App (manual, 3 terminals)
+
+```bash
+# Terminal 1 — Ollama
+ollama serve
+
+# Terminal 2 — Backend
+cd backend
+source venv/bin/activate
+uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+# Terminal 3 — Frontend
+cd frontend
+npm run dev
+```
+
+Open **http://localhost:5173** in your browser.
+
+---
+
+## Project Structure
+
+```
+multi-agent-orchestration/
+├── setup.sh                   # Environment-specific setup & run script
+├── Makefile                   # Convenience targets
+├── .env.example               # Local env template
+├── .env.cloud.example         # Production env template
+├── docker-compose.yml         # Local Docker stack
+├── docker-compose.cloud.yml   # Cloud Docker stack
+├── backend/
+│   ├── main.py                # FastAPI app — all endpoints + auth routes
+│   ├── settings.py            # Config from env vars
+│   ├── requirements.txt       # Python deps (incl. PyJWT, psycopg2-binary)
+│   ├── infra/
+│   │   ├── auth.py            # API-key auth + unified require_user_or_key()
+│   │   ├── oauth.py           # Google OAuth2, session JWT, email allowlist
+│   │   ├── billing.py         # Stripe billing (optional)
+│   │   └── db/                # Postgres schema (init.sql)
+│   ├── agents_crew.py
+│   ├── tasks_crew.py
+│   ├── tools.py
+│   ├── rag_engine.py
+│   ├── web_search_tool.py
+│   ├── telegram_bot.py
+│   └── self_improver.py
+└── frontend/
+    └── src/
+        └── App.jsx            # React SPA — login gate, auth state, user header
 ```
 
 ---
 
-## 🔐 Authentication (Google OAuth)
+## Troubleshooting
 
-Users can sign in via Google OAuth (`/auth/login/google`). After login, a session
-cookie (`mao_session`) is issued. Access is controlled by email / domain allowlists
-configured via environment variables.
-
-| Variable | Example | Description |
-|---|---|---|
-| `GOOGLE_CLIENT_ID` | `xxx.apps.googleusercontent.com` | Google OAuth client ID |
-| `GOOGLE_CLIENT_SECRET` | `GOCSPX-...` | Google OAuth client secret |
-| `GOOGLE_REDIRECT_URI` | `https://agents.example.com/auth/callback/google` | Must match Google Console |
-| `ALLOWED_EMAIL_DOMAINS` | `gmail.com,mycompany.com` | Comma-separated allowed domains |
-| `ALLOWED_EMAILS` | `you@partner.com` | Additional explicit allowlist |
-| `ADMIN_EMAILS` | `you@mycompany.com` | Automatically granted admin+enterprise |
-| `SESSION_SECRET` | *(32 random bytes)* | JWT signing secret for session cookies |
+| Issue | Fix |
+|-------|-----|
+| `ModuleNotFoundError: pyjwt` | `pip install PyJWT` |
+| `ModuleNotFoundError: psycopg2` | `pip install psycopg2-binary` |
+| Google login returns 403 | Check `ALLOWED_EMAIL_DOMAINS` in `.env` |
+| `GOOGLE_CLIENT_ID not set` | Add credentials to `.env.local` |
+| `Invalid session` on /auth/me | `SESSION_SECRET` changed — users must log in again |
+| `pip not found` | `source backend/venv/bin/activate` first |
+| RAM pressure on M1 8GB | Switch to `llama3.2:3b` via model badge in header |
