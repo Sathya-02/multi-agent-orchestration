@@ -1,10 +1,10 @@
 # Multi Agent Orchestration
 
-A local-first, multi-agent AI orchestration platform. Run powerful AI agent pipelines on your laptop with Ollama, or deploy to the cloud with full multi-user support.
+A local-first, multi-agent AI orchestration platform. Run powerful AI agent pipelines on your laptop with Ollama, or deploy to the cloud with full multi-user support, Google OAuth login, and email-based authorisation.
 
 ---
 
-## Quick Start (local)
+## Quick Start
 
 ```bash
 git clone https://github.com/Sathya-02/multi-agent-orchestration.git
@@ -14,10 +14,10 @@ chmod +x setup.sh
 ```
 
 | Service  | URL                         |
-|----------|-----------------------------|
-| Backend  | http://localhost:8000       |
-| Frontend | http://localhost:5173       |
-| API docs | http://localhost:8000/docs  |
+|----------|---------------------------------|
+| Backend  | http://localhost:8000           |
+| Frontend | http://localhost:5173           |
+| API docs | http://localhost:8000/docs      |
 
 Press **Ctrl+C** to stop everything cleanly.
 
@@ -31,11 +31,11 @@ Press **Ctrl+C** to stop everything cleanly.
 
 ### Environments
 
-| Argument      | Description                                                   |
-|---------------|---------------------------------------------------------------|
-| `local`       | Hot-reload, Ollama, no API key needed *(default)*             |
-| `dev`         | Mirrors staging — `REQUIRE_API_KEY=false`, DEBUG logging      |
-| `production`  | Gunicorn, `REQUIRE_API_KEY=true`, static frontend build       |
+| Argument     | Description                                                     | API Key     | Server      | Frontend        | Ollama      |
+|--------------|-----------------------------------------------------------------|-------------|-------------|-----------------|-------------|
+| `local`      | Hot-reload, Ollama auto-started, no API key needed *(default)*  | not required| uvicorn --reload | Vite dev server | auto-started |
+| `dev`        | Mirrors staging — DEBUG logging, API key optional               | not required| uvicorn --reload | Vite dev server | auto-started |
+| `production` | Gunicorn, API key enforced, static frontend build               | **required**| gunicorn    | `npm run build` only | skipped |
 
 ### Steps
 
@@ -53,100 +53,134 @@ Press **Ctrl+C** to stop everything cleanly.
 ### Examples
 
 ```bash
-./setup.sh                          # local + all steps
+# ── Environment only ────────────────────────────────────────────────────
+./setup.sh                          # local + all steps (default)
 ./setup.sh local                    # same as above
 ./setup.sh dev                      # dev environment, all steps
 ./setup.sh production               # production build + start
 
-./setup.sh local check              # check tools only
+# ── Specific steps ───────────────────────────────────────────────────────
+./setup.sh local check              # verify tools only
+./setup.sh local venv               # create virtualenv only
 ./setup.sh local venv db            # setup only — don't start servers
-./setup.sh dev backend              # restart backend (dev)
+./setup.sh dev backend              # restart backend without touching deps
 ./setup.sh production db            # re-apply schema to production DB
 ./setup.sh production npm           # rebuild frontend static bundle
 ./setup.sh local npm                # reinstall / refresh npm deps
+./setup.sh production backend       # restart production backend only
 ```
 
 ---
 
 ## Environment Files
 
-| File                | Loaded by              | Purpose                          |
-|---------------------|------------------------|----------------------------------|
-| `.env.local`        | `./setup.sh local`     | Safe local defaults, committed   |
-| `.env.dev`          | `./setup.sh dev`       | Dev/staging values, not committed|
-| `.env.production`   | `./setup.sh production`| Production secrets, never commit |
-| `.env.example`      | Reference              | Template for new env files       |
-| `.env.cloud.example`| Reference              | Cloud deployment template        |
+| File                      | Loaded by               | Committed? | Purpose                          |
+|---------------------------|-------------------------|------------|----------------------------------|
+| `.env.local`              | `./setup.sh local`      | ✅ yes      | Safe local defaults              |
+| `.env.dev`                | `./setup.sh dev`        | ❌ no       | Dev/staging values               |
+| `.env.production`         | `./setup.sh production` | ❌ no       | Production secrets               |
+| `.env.production.example` | Reference               | ✅ yes      | Template for production          |
+| `.env.cloud.example`      | Reference               | ✅ yes      | Cloud deployment template        |
 
-Explicit shell env vars always take priority over the loaded file.
+Explicit shell environment variables always override values from the loaded file.
 
-### Key local variables (`.env.local`)
+### Local defaults (`.env.local` — already in the repo)
 
 ```env
-# Database — setup.sh creates mao_local automatically
+# No secrets — safe to commit
 MAO_DB_NAME=mao_local
-
-# Auth — no API key required locally
 REQUIRE_API_KEY=false
-MASTER_API_KEY=
+OLLAMA_MODEL=phi3:mini
+SESSION_SECRET=local-dev-secret-change-in-prod
 
-# Google OAuth — leave empty to disable (safe default)
+# Google OAuth — leave empty to disable (default)
 # GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 # GOOGLE_CLIENT_SECRET=your-secret
 GOOGLE_REDIRECT_URI=http://localhost:8000/auth/callback/google
-
-# Session JWT
-SESSION_SECRET=local-dev-secret-change-in-prod
 OAUTH_SUCCESS_REDIRECT=http://localhost:5173
+```
 
-# LLM
-OLLAMA_MODEL=phi3:mini
-OLLAMA_URL=http://localhost:11434
+### Production quickstart (`.env.production`)
+
+```env
+MAO_DB_NAME=mao_production
+REQUIRE_API_KEY=true
+MASTER_API_KEY=<strong-secret>
+
+GOOGLE_CLIENT_ID=<prod-client-id>.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=<prod-secret>
+GOOGLE_REDIRECT_URI=https://yourdomain.com/auth/callback/google
+OAUTH_SUCCESS_REDIRECT=https://yourdomain.com
+
+SESSION_SECRET=<32-byte-random-hex>   # python -c "import secrets; print(secrets.token_hex(32))"
+
+ALLOWED_EMAIL_DOMAINS=yourcompany.com
+ADMIN_EMAILS=admin@yourcompany.com
+
+GUNICORN_WORKERS=4
+ALLOWED_ORIGINS=https://yourdomain.com
 ```
 
 ---
 
 ## Authentication & Authorisation
 
-The platform supports two auth modes that coexist:
+Two auth modes coexist — API keys for programmatic clients, Google OAuth for browser users.
 
-### 1. API key (programmatic / existing)
+### 1 — API key (programmatic)
+
 - Set `REQUIRE_API_KEY=true` and `MASTER_API_KEY=<secret>` in production.
 - Pass the key as `Authorization: Bearer <key>` or `?key=<key>`.
-- Disabled by default for local (`REQUIRE_API_KEY=false`).
+- Disabled by default for `local` and `dev` (`REQUIRE_API_KEY=false`).
 
-### 2. Google OAuth (browser login)
+### 2 — Google OAuth (browser login)
+
 - Enabled by setting `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
-- Login flow: browser → `/auth/login/google` → Google consent → `/auth/callback/google` → session cookie set → redirect to frontend.
-- Session stored as an HTTP-only JWT cookie (`mao_session`).
+- When those vars are **empty** (local default), the login button is hidden and the API stubs `/auth/me` as a local admin — no friction during development.
+- When configured, the flow is:
+  1. User clicks **Sign in with Google**
+  2. Browser → `GET /auth/login/google` → Google consent screen
+  3. Google redirects → `GET /auth/callback/google?code=…`
+  4. Backend verifies the ID token, finds-or-creates a `users` row
+  5. HTTP-only session cookie (`mao_session`) set → browser redirected to frontend
 
 ### Email-based authorisation
 
-| Variable               | Effect                                                       |
-|------------------------|--------------------------------------------------------------|
-| `ALLOWED_EMAIL_DOMAINS`| Only these domains can log in (empty = any Google account)  |
-| `ALLOWED_EMAILS`       | Explicit allowlist (always allowed, regardless of domain)   |
-| `ADMIN_EMAILS`         | These users get `plan=enterprise` and `is_admin=true`        |
+Configure via environment variables — no code changes needed:
+
+| Variable               | Effect                                                            |
+|------------------------|-------------------------------------------------------------------|
+| `ALLOWED_EMAIL_DOMAINS`| Only these domains can log in (empty = any Google account)       |
+| `ALLOWED_EMAILS`       | Explicit per-address override (always allowed, ignores domain)   |
+| `ADMIN_EMAILS`         | These users get `plan=enterprise` and `is_admin=true`            |
+
+**Domain → plan mapping (default policy):**
+
+| Condition                         | `plan`       | `is_admin` |
+|-----------------------------------|--------------|------------|
+| Email in `ADMIN_EMAILS`           | `enterprise` | true       |
+| Any other allowed email/domain    | `free`       | false      |
+| Disallowed domain                 | 403 Forbidden| —          |
 
 ### Auth endpoints
 
-| Method | Path                        | Description                    |
-|--------|-----------------------------|--------------------------------|
-| GET    | `/auth/login/google`        | Redirect to Google consent     |
-| GET    | `/auth/callback/google`     | OAuth callback, sets cookie    |
-| GET    | `/auth/me`                  | Returns current user (JSON)    |
-| POST   | `/auth/logout`              | Clears session cookie          |
+| Method | Path                    | Description                                |
+|--------|-------------------------|-----------------------------------------|
+| GET    | `/auth/login/google`    | Redirect browser to Google consent screen |
+| GET    | `/auth/callback/google` | OAuth callback — sets session cookie      |
+| GET    | `/auth/me`              | Returns current user as JSON              |
+| POST   | `/auth/logout`          | Clears the session cookie                 |
 
 ---
 
 ## Prerequisites
 
-| Tool        | Version   | Install                             |
-|-------------|-----------|-------------------------------------|
-| Python      | 3.11+     | https://python.org                  |
-| Node.js     | 18+       | https://nodejs.org                  |
-| PostgreSQL  | 14+       | https://postgresql.org              |
-| Ollama      | latest    | https://ollama.com                  |
+| Tool       | Version | Install                        |
+|------------|---------|--------------------------------|
+| Python     | 3.11+   | https://python.org             |
+| Node.js    | 18+     | https://nodejs.org             |
+| PostgreSQL | 14+     | https://postgresql.org         |
+| Ollama     | latest  | https://ollama.com             |
 
 ```bash
 # Pull required models
@@ -161,29 +195,30 @@ ollama pull nomic-embed-text
 ```
 multi-agent-orchestration/
 ├── backend/
-│   ├── main.py              # FastAPI app entry point
+│   ├── main.py              # FastAPI app entry point + all HTTP routes
 │   ├── settings.py          # All configuration (single source of truth)
 │   ├── requirements.txt
-│   ├── agents/              # Agent definitions
-│   ├── tools/               # Tool definitions
+│   ├── agents/              # Agent definitions and registry
+│   ├── tools/               # Tool definitions and registry
 │   ├── infra/
-│   │   ├── auth.py          # API key authentication
-│   │   ├── oauth.py         # Google OAuth + session JWT
+│   │   ├── auth.py          # API-key authentication dependency
+│   │   ├── oauth.py         # Google OAuth + session JWT helpers
 │   │   └── db/
-│   │       └── init.sql     # Schema (idempotent)
-│   └── data/                # Runtime JSON state
+│   │       └── init.sql     # Postgres schema (idempotent)
+│   └── data/                # Runtime JSON state (gitignored)
 ├── frontend/
 │   └── src/
 │       └── App.jsx          # Single-page React app
 ├── setup.sh                 # Environment-aware setup & launch script
 ├── .env.local               # Local defaults (safe to commit)
-├── .env.example             # Template for other environments
+├── .env.production.example  # Production template
+├── .env.cloud.example       # Cloud deployment template
 └── docker-compose.yml       # Docker local alternative
 ```
 
 ---
 
-## Docker (alternative)
+## Docker (alternative to setup.sh)
 
 ```bash
 # Local
@@ -197,10 +232,24 @@ docker compose -f docker-compose.cloud.yml up -d
 
 ## Troubleshooting
 
-**psql: connection refused** — ensure PostgreSQL is running: `brew services start postgresql` (macOS) or `sudo systemctl start postgresql` (Linux).
+**psql: connection refused** — ensure PostgreSQL is running:
+```bash
+brew services start postgresql   # macOS
+sudo systemctl start postgresql  # Linux
+```
 
-**ollama: model not found** — run `ollama pull phi3:mini` before starting.
+**ollama: model not found** — pull the model first:
+```bash
+ollama pull phi3:mini
+```
 
-**Port already in use** — set `BACKEND_PORT=8001` or `FRONTEND_PORT=5174` before calling `setup.sh`.
+**Port already in use** — override before calling setup.sh:
+```bash
+BACKEND_PORT=8001 ./setup.sh local
+```
 
-**OAuth redirect mismatch** — make sure the Authorised redirect URI in your Google Cloud Console matches `GOOGLE_REDIRECT_URI` exactly, including the protocol and port.
+**OAuth redirect mismatch** — the Authorised redirect URI in your Google Cloud Console must match `GOOGLE_REDIRECT_URI` exactly (protocol, host, port, and path).
+
+**403 after login** — your email domain is not in `ALLOWED_EMAIL_DOMAINS`. Add it to `.env.production` and restart the backend.
+
+**Login button not showing locally** — `GOOGLE_CLIENT_ID` is empty. This is intentional for local development. Set it in `.env.local` (or `.env.dev`) to enable OAuth locally.
