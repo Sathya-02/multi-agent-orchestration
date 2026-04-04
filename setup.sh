@@ -33,6 +33,7 @@
 #   ./setup.sh dev backend            # just (re)start the dev backend
 #   ./setup.sh production db          # apply schema to production DB
 #   ./setup.sh local check            # verify tools only
+#   ./setup.sh local npm              # reinstall / rebuild frontend deps only
 #
 # ENVIRONMENT VARIABLES (override env-file values)
 #   MAO_DB_NAME     Postgres database name       (default: mao_<env>)
@@ -153,6 +154,16 @@ esac
 
 VENV_DIR="$BACKEND_DIR/venv"
 
+# ── Resolve DATABASE_URL early so all steps share the same value ─────────
+# Priority: explicit DATABASE_URL env var > MAO_DB_NAME local socket
+if [ -z "${DATABASE_URL:-}" ]; then
+  export DATABASE_URL="postgres:///$MAO_DB_NAME"
+fi
+
+# Export auth/server env vars so child processes (uvicorn/gunicorn) inherit them
+export REQUIRE_API_KEY
+export MAO_DB_NAME
+
 # ── Banner ────────────────────────────────────────────────────────────────────
 
 echo ""
@@ -160,6 +171,7 @@ echo -e "${C_BOLD}  ⧡ Multi Agent Orchestration — Setup${C_RESET}"
 echo -e "  Environment : ${C_CYAN}${ENV}${C_RESET}"
 echo -e "  Steps       : ${C_CYAN}${STEPS[*]}${C_RESET}"
 echo -e "  DB name     : ${C_CYAN}${MAO_DB_NAME}${C_RESET}"
+echo -e "  DATABASE_URL: ${C_CYAN}${DATABASE_URL}${C_RESET}"
 echo ""
 
 # =============================================================================
@@ -227,6 +239,7 @@ run_venv() {
     pip install --upgrade pip setuptools wheel
     info "Installing backend/requirements.txt..."
     pip install -r "$BACKEND_DIR/requirements.txt"
+    # Auth / OAuth extras
     pip install requests psutil pypdf python-docx openpyxl pyjwt || true
     pip install duckduckgo-search yfinance || true
     pip install "python-telegram-bot==20.7" || true
@@ -275,33 +288,33 @@ run_db() {
     return
   fi
 
-  if [ -n "${DATABASE_URL:-}" ]; then
-    info "Using DATABASE_URL from environment."
+  if [ -n "${DATABASE_URL:-}" ] && [ "$DATABASE_URL" != "postgres:///$MAO_DB_NAME" ]; then
+    # Explicit full URL was provided in the env file (e.g. cloud connection string)
+    info "Using DATABASE_URL from environment: $DATABASE_URL"
     DB_CONNECT="$DATABASE_URL"
-    DB_DISPLAY="$DATABASE_URL"
   else
+    # Local socket: ensure the DB exists first
     DB_CONNECT="$MAO_DB_NAME"
-    DB_DISPLAY="$MAO_DB_NAME (local socket)"
-    info "Ensuring database '$MAO_DB_NAME' exists..."
+    info "Ensuring local database '$MAO_DB_NAME' exists..."
 
     if ! psql postgres -tAc "SELECT 1 FROM pg_database WHERE datname='$MAO_DB_NAME'" 2>/dev/null | grep -q 1; then
       info "Creating database '$MAO_DB_NAME'..."
       psql postgres -c "CREATE DATABASE \"$MAO_DB_NAME\"" || {
-        warn "Could not create DB automatically. Create it manually: createdb $MAO_DB_NAME"
+        warn "Could not create DB automatically. Try: createdb $MAO_DB_NAME"
       }
     else
       info "Database '$MAO_DB_NAME' already exists — skipping creation."
     fi
 
-    export DATABASE_URL="postgres:///$MAO_DB_NAME"
-    info "DATABASE_URL set to $DATABASE_URL"
+    info "DATABASE_URL → $DATABASE_URL"
   fi
 
   if psql "$DB_CONNECT" -c 'SELECT 1' >/dev/null 2>&1; then
     info "Applying backend/infra/db/init.sql (idempotent)..."
     psql "$DB_CONNECT" -f "$BACKEND_DIR/infra/db/init.sql" && info "Schema up to date." || warn "Schema apply had warnings — check output above."
   else
-    warn "Could not connect to $DB_DISPLAY — skipping schema apply."
+    warn "Could not connect to DB — skipping schema apply."
+    warn "  Check: psql $DB_CONNECT"
   fi
 }
 
@@ -341,12 +354,15 @@ run_ollama() {
 run_backend() {
   section "FastAPI backend"
 
+  # Activate venv — DATABASE_URL and REQUIRE_API_KEY are already exported
+  # by the top-level section above, so uvicorn/gunicorn child processes
+  # inherit the correct values without needing to source the env file again.
   source "$VENV_DIR/bin/activate"
-
-  export REQUIRE_API_KEY="${REQUIRE_API_KEY:-false}"
 
   if [ "$USE_GUNICORN" = "1" ]; then
     info "Starting gunicorn (production)  →  http://0.0.0.0:${BACKEND_PORT}"
+    info "  DATABASE_URL = $DATABASE_URL"
+    info "  REQUIRE_API_KEY = $REQUIRE_API_KEY"
     (
       cd "$BACKEND_DIR"
       PYTHONWARNINGS=ignore \
@@ -359,6 +375,8 @@ run_backend() {
     ) &
   else
     info "Starting uvicorn ($ENV)  →  http://0.0.0.0:${BACKEND_PORT}"
+    info "  DATABASE_URL = $DATABASE_URL"
+    info "  REQUIRE_API_KEY = $REQUIRE_API_KEY"
     (
       cd "$BACKEND_DIR"
       PYTHONWARNINGS=ignore \
@@ -422,10 +440,10 @@ done
 if [ -n "$BACKEND_PID" ] || [ -n "$FRONTEND_PID" ]; then
   echo ""
   echo -e "${C_BOLD}  Services running (${ENV})${C_RESET}"
-  [ -n "$BACKEND_PID"  ] && echo -e "  Backend  → ${C_CYAN}http://localhost:${BACKEND_PORT}${C_RESET}"
-  [ -n "$FRONTEND_PID" ] && echo -e "  Frontend → ${C_CYAN}http://localhost:${FRONTEND_PORT}${C_RESET}"
+  [ -n "$BACKEND_PID"  ] && echo -e "  Backend  → ${C_CYAN}http://localhost:${BACKEND_PORT}${C_RESET}  (PID $BACKEND_PID)"
+  [ -n "$FRONTEND_PID" ] && echo -e "  Frontend → ${C_CYAN}http://localhost:${FRONTEND_PORT}${C_RESET}  (PID $FRONTEND_PID)"
   echo ""
-  echo "  Press Ctrl+C to stop."
+  echo "  Press Ctrl+C to stop all services."
   echo ""
 
   trap 'echo ""; info "Stopping services..."; [ -n "$BACKEND_PID" ] && kill "$BACKEND_PID" 2>/dev/null; [ -n "$FRONTEND_PID" ] && kill "$FRONTEND_PID" 2>/dev/null; exit 0' INT TERM
