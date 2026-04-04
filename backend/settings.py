@@ -9,6 +9,7 @@ This is the ONE file you edit to change system behaviour:
   - Spawn controls
   - Report format defaults
   - Cloud / multi-user settings
+  - Auth / OAuth (Google login, session cookies, email-based authz)
 
 All sub-modules import from here. Never scatter magic strings across files.
 
@@ -152,6 +153,58 @@ MAX_JOBS_PER_KEY        = int(os.getenv("MAX_JOBS_PER_KEY", "3"))
 
 # Job timeout in seconds
 JOB_TIMEOUT_SECONDS     = int(os.getenv("JOB_TIMEOUT_SECONDS", "300"))
+
+# ─────────────────────────────────────────────────────────────────────────
+# AUTH / OAUTH — Google login + email-based authorisation
+# ─────────────────────────────────────────────────────────────────────────
+#
+# LOCAL  → GOOGLE_CLIENT_ID/SECRET left empty → OAuth routes exist but
+#          login button is hidden in the UI; app runs fully unauthenticated.
+# DEV    → fill in a real OAuth app pointed at http://localhost:8000
+# PROD   → set all vars in .env.production / environment secrets
+
+# Google OAuth 2.0 credentials
+# Get them at https://console.cloud.google.com/ → APIs & Services → Credentials
+GOOGLE_CLIENT_ID        = os.getenv("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET    = os.getenv("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT_URI     = os.getenv(
+    "GOOGLE_REDIRECT_URI",
+    "http://localhost:8000/auth/callback/google",
+)
+
+# Comma-separated list of email domains allowed to log in.
+# Empty string = any Google account is allowed (open, use with care).
+# Example: "gmail.com,mycompany.com"
+ALLOWED_EMAIL_DOMAINS: list[str] = [
+    d.strip().lower()
+    for d in os.getenv("ALLOWED_EMAIL_DOMAINS", "").split(",")
+    if d.strip()
+]
+
+# Explicit allowlist of individual email addresses (always allowed regardless
+# of domain rules above). Comma-separated.
+ALLOWED_EMAILS: set[str] = {
+    e.strip().lower()
+    for e in os.getenv("ALLOWED_EMAILS", "").split(",")
+    if e.strip()
+}
+
+# Emails that receive admin/enterprise access.
+ADMIN_EMAILS: set[str] = {
+    e.strip().lower()
+    for e in os.getenv("ADMIN_EMAILS", "").split(",")
+    if e.strip()
+}
+
+# Secret used to sign browser session JWTs.  MUST be overridden in production.
+SESSION_SECRET          = os.getenv("SESSION_SECRET", "local-dev-secret-change-in-prod")
+SESSION_ALG             = "HS256"
+SESSION_COOKIE          = os.getenv("SESSION_COOKIE_NAME", "mao_session")
+SESSION_TTL_HOURS       = int(os.getenv("SESSION_TTL_HOURS", "8"))
+
+# After Google login, where to send the browser.
+# Local: the Vite dev server.  Production: your real domain.
+OAUTH_SUCCESS_REDIRECT  = os.getenv("OAUTH_SUCCESS_REDIRECT", "http://localhost:5173")
 
 # ─────────────────────────────────────────────────────────────────────────
 # REPORT DEFAULTS
