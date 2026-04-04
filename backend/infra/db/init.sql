@@ -17,6 +17,11 @@ CREATE TABLE IF NOT EXISTS users (
     active          BOOLEAN NOT NULL DEFAULT TRUE
 );
 
+-- Optional RBAC role separate from billing plan.
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user';
+
+
 -- ── API Keys ──────────────────────────────────────────────────────────
 -- Each user can have multiple API keys.
 -- Keys are hashed — we never store the raw value after creation.
