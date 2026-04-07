@@ -153,7 +153,8 @@ body{
 .scene-col{
   position:relative;
   overflow:hidden;
-  background:#f0f2f5;
+  /* FIX: was #f0f2f5 (light grey) — must match dark theme */
+  background:var(--bg-base);
   border-right:1px solid var(--bd-subtle);
 }
 
@@ -584,6 +585,21 @@ input[type="color"]{height:34px;padding:2px;cursor:pointer;border-radius:6px}
 .model-option:hover{background:rgba(58,127,255,.09);border-color:var(--bd-mid)}
 .model-option.selected{border-color:var(--accent);background:rgba(58,127,255,.14);color:var(--tx-primary)}
 .model-option input[type="radio"]{accent-color:var(--accent)}
+/* pulled badge inside model list */
+.model-option .badge-pulled{
+  margin-left:auto;
+  font-size:9px;font-weight:700;
+  background:rgba(46,204,138,.14);color:#4ade80;
+  border:1px solid rgba(46,204,138,.3);
+  border-radius:4px;padding:1px 5px;
+}
+.model-option .badge-notpulled{
+  margin-left:auto;
+  font-size:9px;font-weight:700;
+  background:rgba(255,79,106,.1);color:#ff7a8a;
+  border:1px solid rgba(255,79,106,.25);
+  border-radius:4px;padding:1px 5px;
+}
 
 /* ── Stats grid (dashboard) ─────────────────────────────── */
 .stats-grid{
