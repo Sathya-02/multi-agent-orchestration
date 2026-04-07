@@ -732,6 +732,41 @@ def update_web_search_config(body: dict, current_user=_auth_dep):
 # JOB EXECUTION  /run  /job/{id}  /download/{filename}
 # ══════════════════════════════════════════════════════════════════════════
 
+# Models known to be too small for multi-agent pipelines (< 1B params or
+# very low num_predict).  These trigger a clearer error hint.
+_SMALL_MODELS = {"phi3:mini", "phi3", "tinyllama", "tinyllama:latest",
+                 "qwen:0.5b", "qwen2:0.5b"}
+
+
+def _classify_job_error(exc: Exception, model: str, mode: str) -> str:
+    """Return a human-readable error string, including upgrade hints."""
+    msg = str(exc)
+    low = msg.lower()
+
+    # TypeError from calling build_agents with wrong arity (legacy guard)
+    if isinstance(exc, TypeError) and "argument" in low:
+        return (
+            f"Internal error: {msg}  "
+            "(Hint: build_agents() signature mismatch — check agents_crew.py)"
+        )
+
+    # Model context / token overflow
+    if any(kw in low for kw in ("context", "token", "num_predict", "length",
+                                  "exceed", "too long", "max_tokens")):
+        hint = (f" Switch from '{model}' to llama3.2:3b or larger for '{mode}' mode."
+                if model in _SMALL_MODELS else " Try a larger model.")
+        return f"Model capacity exceeded.{hint}  ({msg[:200]})"
+
+    # Small model used for a heavy pipeline
+    if model in _SMALL_MODELS and mode in ("research", "analysis", "code"):
+        return (
+            f"'{model}' is too small for '{mode}' mode (context limit ~512 tokens). "
+            f"Switch to llama3.2:3b or larger.  Original error: {msg[:200]}"
+        )
+
+    return msg
+
+
 @app.post("/run")
 def create_job(req: JobRequest, current_user=_auth_dep):
     job_id = str(uuid.uuid4())
@@ -743,9 +778,11 @@ def create_job(req: JobRequest, current_user=_auth_dep):
 
     def run_crew():
         jobs[job_id]["status"] = "running"
+        model = get_active_model()
         sync_broadcast({"type": "job_status", "job_id": job_id, "status": "running",
-                        "topic": req.topic, "mode": req.mode, "model": get_active_model()})
+                        "topic": req.topic, "mode": req.mode, "model": model})
         try:
+            # FIX: build_agents now accepts an optional mode param — no TypeError
             agents   = build_agents(req.mode)
             tasks    = build_tasks(req.topic, agents, req.mode, req.use_rag)
             crew     = Crew(agents=list(agents.values()), tasks=tasks,
@@ -769,8 +806,9 @@ def create_job(req: JobRequest, current_user=_auth_dep):
                             "result": result, "filename": fname, "format": fmt})
         except Exception as exc:
             logger.exception(f"Job {job_id} failed")
-            jobs[job_id].update({"status": "failed", "result": str(exc)})
-            sync_broadcast({"type": "job_failed", "job_id": job_id, "error": str(exc)})
+            err_msg = _classify_job_error(exc, model, req.mode)
+            jobs[job_id].update({"status": "failed", "result": err_msg})
+            sync_broadcast({"type": "job_failed", "job_id": job_id, "error": err_msg})
 
     t = threading.Thread(target=run_crew, daemon=True)
     t.start()

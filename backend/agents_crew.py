@@ -27,10 +27,24 @@ FS_TOOL_MAP = {
     "fs_edit_file":  FSEditTool,
 }
 
+# Minimum recommended model for each mode.
+# phi3:mini (512 num_predict) is too small for multi-agent pipelines.
+MODE_MODEL_HINT: dict[str, str] = {
+    "research": "llama3.2:3b or larger",
+    "analysis": "llama3.2:3b or larger",
+    "code":     "llama3.2:3b or larger",
+    "query":    "phi3:mini is fine",
+}
 
-def build_agents() -> dict[str, Agent]:
+
+def build_agents(mode: str = "research") -> dict[str, Agent]:
     """
     Build a fresh dict of agent_id → CrewAI Agent.
+
+    Args:
+        mode: job mode string (research | query | code | analysis).
+              Accepted here so callers can pass req.mode without a TypeError;
+              currently used only for logging / hints.
 
     For each agent:
       1. Start with the registry definition.
