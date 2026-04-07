@@ -11,7 +11,7 @@ _active_model: str = "phi3:mini"
 # num_ctx      = context window size (tokens)
 # temperature  = creativity vs determinism (lower = more focused)
 MODEL_PRESETS: dict[str, dict] = {
-    # ── Small / M1 8 GB safe ──────────────────────────────────────────────
+    # ── Installed on this machine ─────────────────────────────────────────
     "phi3:mini": {
         "num_predict": 512,
         "num_ctx":     4096,
@@ -22,13 +22,30 @@ MODEL_PRESETS: dict[str, dict] = {
         "num_ctx":     4096,
         "temperature": 0.3,
     },
-    "gemma2:2b": {
+    "gemma3:1b": {
         "num_predict": 512,
         "num_ctx":     4096,
         "temperature": 0.3,
     },
     "qwen2.5:3b": {
         "num_predict": 768,
+        "num_ctx":     4096,
+        "temperature": 0.3,
+    },
+    # ── Embedding models (not for chat, listed for completeness) ──────────
+    "nomic-embed-text:latest": {
+        "num_predict": 0,
+        "num_ctx":     2048,
+        "temperature": 0.0,
+    },
+    "mxbai-embed-large:latest": {
+        "num_predict": 0,
+        "num_ctx":     2048,
+        "temperature": 0.0,
+    },
+    # ── Small / M1 8 GB safe (additional presets) ─────────────────────────
+    "gemma2:2b": {
+        "num_predict": 512,
         "num_ctx":     4096,
         "temperature": 0.3,
     },
