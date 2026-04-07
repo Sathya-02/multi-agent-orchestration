@@ -1,44 +1,60 @@
-export default function AgentCard({ agentId, agentMeta, active, lastMessage, inactive }) {
-  const color  = inactive ? '#94a3b8' : (agentMeta?.color || '#6366f1')
-  const icon   = agentMeta?.icon  || '🤖'
-  const role   = agentMeta?.role  || agentId
-  const label  = agentMeta?.label || agentId.toUpperCase()
+// Strip ANSI escape codes so raw terminal output never leaks into the UI
+const stripAnsi = (str) =>
+  typeof str === 'string'
+    ? str.replace(/\x1b\[[\d;]*[A-Za-z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '').trim()
+    : str
+
+/**
+ * Props (matches what App.jsx passes):
+ *   agentId      – role id string
+ *   label        – display name
+ *   icon         – emoji icon
+ *   color        – hex accent colour
+ *   isActive     – bool, agent is currently working
+ *   isDone       – bool, agent has finished its phase
+ *   lastMessage  – last status string (may contain ANSI)
+ */
+export default function AgentCard({ agentId, label, icon, color, isActive, isDone, lastMessage }) {
+  const accentColor = color || '#6366f1'
+  const displayLabel = label || (agentId ? agentId.toUpperCase() : 'Agent')
+  const displayIcon  = icon  || '🤖'
+
+  const cleanMessage = stripAnsi(lastMessage || '')
+  const statusText = isActive
+    ? '● thinking…'
+    : cleanMessage
+      ? cleanMessage.slice(0, 42) + (cleanMessage.length > 42 ? '…' : '')
+      : 'idle'
 
   return (
-    <div className={`agent-card ${active ? 'active' : ''} ${inactive ? 'agent-card-inactive' : ''}`}>
-      <div className="agent-avatar"
-        style={{ background: `${color}22`, border: `1px solid ${color}55`,
-                 opacity: inactive ? 0.45 : 1 }}>
-        {icon}
+    <div className={`agent-card ${isActive ? 'active' : ''} ${isDone ? 'done' : ''}`}>
+      <div
+        className="agent-avatar"
+        style={{
+          background: `${accentColor}22`,
+          border: `1px solid ${accentColor}55`,
+        }}
+      >
+        {displayIcon}
       </div>
+
       <div className="agent-info">
-        <div style={{display:'flex',alignItems:'center',gap:5}}>
-          <div className="agent-role" style={{ color: inactive ? 'var(--tx-muted)' : undefined }}>
-            {role}
-          </div>
-          {inactive && (
-            <span style={{
-              fontSize:9, fontWeight:800, color:'#94a3b8',
-              background:'rgba(148,163,184,0.15)',
-              border:'1px solid rgba(148,163,184,0.3)',
-              borderRadius:4, padding:'1px 5px', letterSpacing:'.05em'
-            }}>INACTIVE</span>
-          )}
-        </div>
-        <div className={`agent-status ${active && !inactive ? 'thinking' : ''}`}
-          style={{ color: inactive ? 'var(--tx-hint)' : undefined }}>
-          {inactive
-            ? 'Deactivated — not joining jobs'
-            : active
-              ? '● thinking…'
-              : lastMessage
-                ? lastMessage.slice(0, 36) + (lastMessage.length > 36 ? '…' : '')
-                : 'idle'}
+        <div className="agent-role-label">{displayLabel}</div>
+        <div className={`agent-status ${isActive ? 'thinking' : ''}`}>
+          {statusText}
         </div>
       </div>
-      <div className="agent-indicator"
-        style={{ background: inactive ? '#334155' : active ? color : '#334155',
-                 opacity: inactive ? 0.35 : 1 }} />
+
+      <div
+        className="agent-indicator"
+        style={{
+          background: isActive
+            ? accentColor
+            : isDone
+              ? 'var(--success)'
+              : '#334155',
+        }}
+      />
     </div>
   )
 }
