@@ -1,0 +1,7 @@
+/* AgentCard done state — complements App.css agent-card styles */
+.agent-card.done {
+  opacity: 0.65;
+}
+.agent-card.done .agent-indicator {
+  background: var(--success);
+}
