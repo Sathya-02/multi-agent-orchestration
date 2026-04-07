@@ -387,19 +387,33 @@ def get_stats(current_user=_auth_dep):
     done    = sum(1 for j in jobs.values() if j.get("status") == "done")
     failed  = sum(1 for j in jobs.values() if j.get("status") == "failed")
 
+    ram_used_gb  = round(mem.used     / 1_073_741_824, 1) if mem else 0
+    ram_total_gb = round(mem.total    / 1_073_741_824, 1) if mem else 0
+    ram_free_gb  = round(mem.available/ 1_073_741_824, 1) if mem else 0
+    ram_pct      = round(mem.percent, 1)                   if mem else 0
+    disk_used_gb = round(disk.used    / 1_073_741_824, 1) if disk else 0
+    disk_total_gb= round(disk.total   / 1_073_741_824, 1) if disk else 0
+    disk_pct     = round(disk.percent, 1)                  if disk else 0
+    ollama_info  = {"model": get_active_model(), "vram_mb": 0}
+    try:
+        import requests as _req
+        ps = _req.get("http://localhost:11434/api/ps", timeout=1).json()
+        if ps.get("models"):
+            m = ps["models"][0]
+            ollama_info = {"model": m.get("name", get_active_model()), "vram_mb": round(m.get("size_vram", 0) / 1_048_576)}
+    except Exception:
+        pass
     return {
-        "cpu_pct":      cpu,
-        "mem_used_mb":  round(mem.used / 1_048_576) if mem else 0,
+        "cpu_pct": cpu, "ram_used_gb": ram_used_gb, "ram_total_gb": ram_total_gb,
+        "ram_free_gb": ram_free_gb, "ram_pct": ram_pct,
+        "disk_used_gb": disk_used_gb, "disk_total_gb": disk_total_gb, "disk_pct": disk_pct,
+        "active_jobs": running, "total_jobs": running + done + failed,
+        "tokens_in": _token_stats["total_in"], "tokens_out": _token_stats["total_out"],
+        "tokens_last": _token_stats.get("last_out", 0), "ollama": ollama_info,
+        "ws_clients": len(manager.active), "mem_used_mb": round(mem.used / 1_048_576) if mem else 0,
         "mem_total_mb": round(mem.total / 1_048_576) if mem else 0,
-        "disk_used_gb": round(disk.used / 1_073_741_824, 1) if disk else 0,
-        "disk_total_gb":round(disk.total / 1_073_741_824, 1) if disk else 0,
-        "jobs_running": running,
-        "jobs_done":    done,
-        "jobs_failed":  failed,
-        "ws_clients":   len(manager.active),
-        "tokens_in":    _token_stats["total_in"],
-        "tokens_out":   _token_stats["total_out"],
-        "uptime_s":     round(time.time() - _start_time),
+        "jobs_running": running, "jobs_done": done, "jobs_failed": failed,
+        "uptime_s": round(time.time() - _start_time),
     }
 
 _start_time = time.time()
