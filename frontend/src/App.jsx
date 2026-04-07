@@ -4,8 +4,12 @@ import ActivityFeed from './components/ActivityFeed'
 import AgentCard    from './components/AgentCard'
 import './styles/App.css'
 
-const WS_URL  = 'ws://localhost:8000/ws'
-const API_URL = 'http://localhost:8000'
+const API_URL =
+  typeof __API_URL__ !== 'undefined'
+    ? __API_URL__
+    : (import.meta.env.VITE_API_URL || 'http://localhost:8000')
+
+const WS_URL = API_URL.replace(/^http/, 'ws') + '/ws'
 const BUILTIN = ['coordinator','researcher','analyst','writer']
 const PHASE_ORDER = ['coordinator','researcher','analyst','writer']
 const PHASE_META  = {
