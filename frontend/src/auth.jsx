@@ -14,6 +14,19 @@ const API_URL =
 
 const AuthContext = createContext(null)
 
+/** Safely derive initials from a user object — never throws. */
+export function getUserInitials(user) {
+  if (!user) return '?'
+  const name = user.name || user.email || ''
+  if (!name) return '?'
+  return name
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map(p => p[0].toUpperCase())
+    .join('')
+}
+
 export function AuthProvider({ children }) {
   const [user,        setUser]        = useState(null)
   const [authLoading, setAuthLoading] = useState(true)
@@ -22,8 +35,15 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     fetch(`${API_URL}/auth/me`, { credentials: 'include' })
       .then(r => (r.ok ? r.json() : null))
-      .then(u  => setUser(u))
-      .catch(() => setAuthError('Could not reach auth endpoint'))
+      .then(u => {
+        // u may be null (unauthenticated) or an object — both are valid
+        setUser(u && typeof u === 'object' ? u : null)
+      })
+      .catch(() => {
+        // Backend unreachable — treat as unauthenticated, don't crash
+        setAuthError('Could not reach auth endpoint')
+        setUser(null)
+      })
       .finally(() => setAuthLoading(false))
   }, [])
 
