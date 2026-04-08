@@ -1,5 +1,5 @@
 import { useRef, useMemo, useEffect, memo } from 'react'
-import { Canvas, useFrame, useThree } from '@react-three/fiber'
+import { Canvas, useFrame } from '@react-three/fiber'
 import { OrbitControls, Text, Sparkles, RoundedBox, Html } from '@react-three/drei'
 import * as THREE from 'three'
 
@@ -44,7 +44,10 @@ const HANDSHAKE_PAIRS = [
 function isDirectPair(a,b){return HANDSHAKE_PAIRS.some(([x,y])=>(x===a&&y===b)||(x===b&&y===a))}
 
 // ─── Smooth auto-rotate controller ───────────────────────────────────────────
-// Lerps autoRotateSpeed each frame so React never causes a prop-driven camera reset.
+// Lerps autoRotateSpeed each frame so React never causes a prop-driven camera
+// reset. Calls controls.update(delta) after mutating speed so the damped orbit
+// recalculates from the correct state — without this call the damped integrator
+// can drift, manifesting as an apparent zoom-out.
 function SmoothAutoRotate({ controlsRef, activeAgent }) {
   const targetSpeed = useRef(activeAgent ? 0.42 : 0.1)
 
@@ -59,9 +62,50 @@ function SmoothAutoRotate({ controlsRef, activeAgent }) {
     if (Math.abs(current - target) > 0.001) {
       controlsRef.current.autoRotateSpeed += (target - current) * Math.min(delta * 2, 1)
     }
+    // Must call update so the damped orbit integrates the new speed this frame.
+    controlsRef.current.update(delta)
   })
 
   return null
+}
+
+// ─── Lighting with imperative intensity control ───────────────────────────────
+// Point lights use refs + useFrame so React never re-renders the light nodes
+// when activeAgent changes. A React re-render of lights caused a bulk
+// material-update spike that corrupted OrbitControls' spherical radius.
+function Lighting({ activeAgent }) {
+  const lightRefs = useRef({})
+
+  useFrame(() => {
+    AGENT_IDS.forEach(id => {
+      const ref = lightRefs.current[id]
+      if (!ref) return
+      ref.intensity = activeAgent === id ? 1.8 : 0.35
+      ref.color.set(activeAgent === id ? AGENT_META[id].color : '#ffffff')
+    })
+  })
+
+  return (
+    <>
+      <ambientLight intensity={1.1} color="#ffffff"/>
+      <pointLight position={[0,6.4,0]} intensity={2.8} color="#fff8f0" castShadow/>
+      <pointLight position={[0,4.2,-10]} intensity={0.5} color="#4488ff"/>
+      {AGENT_IDS.map(id => {
+        const { deskPos } = AGENT_META[id]
+        return (
+          <pointLight
+            key={id}
+            ref={el => { lightRefs.current[id] = el }}
+            position={[deskPos[0], 5.7, deskPos[2]]}
+            intensity={0.35}
+            color="#ffffff"
+            distance={9}
+          />
+        )
+      })}
+      <directionalLight position={[0,5.8,-9]} intensity={0.7} color="#ffe8d0" castShadow/>
+    </>
+  )
 }
 
 function OfficeRoom() {
@@ -709,11 +753,10 @@ function RobotAvatar({agentId,active,isWalking}){
 
 const SPEECH={coordinator:'Delegating',researcher:'Searching',analyst:'Analysing',writer:'Writing',fs_agent:'File ops'}
 
-// FIX: SpeechBubble no longer conditionally mounts/unmounts the Text node.
-// Previously {shown && <Text>} caused React to unmount+remount the Text mesh
-// mid-frame whenever activeAgent changed, producing a 1-frame geometry tear
-// that jerked the camera. Now the Text is always mounted; opacity is toggled
-// imperatively via useFrame so React reconciler is never involved in the switch.
+// SpeechBubble — opacity is controlled entirely via useFrame (imperative).
+// Neither the background mesh nor the Text ever re-mounts. fillOpacity on
+// the Text was a React-prop-driven re-render path; replaced with always-on
+// rendering gated by the bgRef opacity so the reconciler is never involved.
 function SpeechBubble({color,active,agentId,lastMessage,isAtTable}){
   const bgRef  = useRef()
   const txtRef = useRef()
@@ -730,7 +773,10 @@ function SpeechBubble({color,active,agentId,lastMessage,isAtTable}){
     }
     if(txtRef.current){
       txtRef.current.position.y = (bgRef.current?.position.y ?? 2.85) + 0.01
-      txtRef.current.material && (txtRef.current.material.opacity = bgRef.current?.material.opacity ?? 0)
+      // Sync text opacity to background opacity for smooth fade
+      if(txtRef.current.material) {
+        txtRef.current.material.opacity = bgRef.current?.material.opacity ?? 0
+      }
     }
   })
 
@@ -740,6 +786,7 @@ function SpeechBubble({color,active,agentId,lastMessage,isAtTable}){
         <planeGeometry args={[2.1,0.42]}/>
         <meshBasicMaterial color={color} transparent opacity={0} side={THREE.FrontSide}/>
       </mesh>
+      {/* Always mounted — opacity controlled imperatively above, never via React props */}
       <Text
         ref={txtRef}
         position={[0,2.86,0.02]}
@@ -749,7 +796,6 @@ function SpeechBubble({color,active,agentId,lastMessage,isAtTable}){
         anchorY="middle"
         outlineWidth={0.009}
         outlineColor={color}
-        fillOpacity={shown ? 1 : 0}
       >
         {text}
       </Text>
@@ -776,9 +822,6 @@ function TableSeatBubble({color,label}){
   )
 }
 
-// FIX: AgentNode — isActive and isPartner are memoised so sibling nodes don't
-// recompute on every activeAgent change, preventing the frame-spike that
-// momentarily corrupted OrbitControls' spherical radius.
 function AgentNode({agentId,activeAgent,lastMessage,currentPhase}){
   const meta=AGENT_META[agentId]
   if(!meta)return null
@@ -822,9 +865,6 @@ function AgentNode({agentId,activeAgent,lastMessage,currentPhase}){
   )
 }
 
-// FIX: CommArc — useMemo deps corrected from [] to [posAKey, posBKey].
-// Previously stale closures meant geometry was never rebuilt when agents changed.
-// Using stringified position keys so the dep comparison is stable.
 function CommArc({agentA,agentB,active}){
   const lineRef = useRef()
   const dotRef  = useRef()
@@ -832,7 +872,6 @@ function CommArc({agentA,agentB,active}){
   const posA    = AGENT_META[agentA]?.deskPos || [0,0,0]
   const posB    = AGENT_META[agentB]?.deskPos || [0,0,0]
 
-  // AGENT_META positions are module-level constants — safe to use as deps
   const curve = useMemo(() => {
     const a   = new THREE.Vector3(posA[0], 2.1, posA[2])
     const b   = new THREE.Vector3(posB[0], 2.1, posB[2])
@@ -873,22 +912,6 @@ function CommArc({agentA,agentB,active}){
         <meshBasicMaterial color={color} transparent opacity={0}/>
       </mesh>
     </group>
-  )
-}
-
-function Lighting({activeAgent}){
-  return (
-    <>
-      <ambientLight intensity={1.1}  color="#ffffff"/>
-      <pointLight position={[0,6.4,0]} intensity={2.8}  color="#fff8f0" castShadow/>
-      <pointLight position={[0,4.2,-10]} intensity={0.5}  color="#4488ff"/>
-      {AGENT_IDS.map(id=>{
-        const meta=AGENT_META[id]; if(!meta)return null
-        const {deskPos,color}=meta
-        return <pointLight key={id} position={[deskPos[0],5.7,deskPos[2]]} intensity={activeAgent===id?1.8:0.35} color={activeAgent===id?color:'#ffffff'} distance={9}/>
-      })}
-      <directionalLight position={[0,5.8,-9]} intensity={0.7}  color="#ffe8d0" castShadow/>
-    </>
   )
 }
 
@@ -942,8 +965,9 @@ function BlackboardStatus({ currentWorker, activeAgent, lastMessages }) {
   )
 }
 
-// FIX: DoubleSide replaced with FrontSide throughout panel meshes to eliminate
-// z-fighting flicker during camera orbit (both faces fighting for the same pixel).
+// TableActivityPanel — always mounted (never returns null) so 3D geometry is
+// never torn down mid-frame. Visibility is gated by the bgRef opacity in
+// useFrame. Returning null previously caused a geometry destroy + camera jitter.
 function TableActivityPanel({activeAgent, lastMessages, currentPhase}) {
   const panelRef = useRef()
   const bgRef    = useRef()
@@ -967,21 +991,23 @@ function TableActivityPanel({activeAgent, lastMessages, currentPhase}) {
     const t = clock.getElapsedTime()
     if (panelRef.current) {
       panelRef.current.position.y = 1.85 + Math.sin(t * 0.8) * 0.04
+      // Hide entire panel group when inactive by scaling to near-zero
+      const targetScale = hasActivity ? 1 : 0.001
+      const cs = panelRef.current.scale.x
+      panelRef.current.scale.setScalar(cs + (targetScale - cs) * Math.min(0.15, 1))
     }
     if (bgRef.current) {
       bgRef.current.material.opacity = hasActivity ? 0.88 : 0.0
     }
   })
 
-  if (!hasActivity) return null
-
-  const activeMeta  = AGENT_META[activeAgent]
-  if (!activeMeta) return null
-
-  const activeMsg = lastMessages?.[activeAgent] || PHASE_LABELS[activeAgent] || activeAgent
+  const activeMeta  = activeAgent ? AGENT_META[activeAgent] : null
+  const activeMsg   = activeMeta
+    ? (lastMessages?.[activeAgent] || PHASE_LABELS[activeAgent] || activeAgent)
+    : ''
   const truncActive = activeMsg.length > 32 ? activeMsg.slice(0,30)+'…' : activeMsg
 
-  const rows = [
+  const rows = activeMeta ? [
     { id: activeAgent, meta: activeMeta, msg: truncActive, status: 'active' },
     ...seatedIds.map(id => {
       const meta = AGENT_META[id]
@@ -990,66 +1016,67 @@ function TableActivityPanel({activeAgent, lastMessages, currentPhase}) {
       const msg1 = msg0.length > 28 ? msg0.slice(0,26)+'…' : msg0
       return { id, meta, msg: msg1, status: 'seated' }
     }).filter(Boolean),
-  ]
+  ] : []
 
-  const panelH = 0.52 + rows.length * 0.36
+  const panelH = 0.52 + Math.max(rows.length, 1) * 0.36
   const panelW = 4.2
 
   return (
     <group ref={panelRef} position={[0, 1.85, 0]}>
       <mesh ref={bgRef} position={[0, 0, 0]}>
         <planeGeometry args={[panelW, panelH]}/>
-        {/* FrontSide only — DoubleSide caused z-fighting during orbit */}
-        <meshBasicMaterial color="#ffffff" transparent opacity={0.88} side={THREE.FrontSide}/>
+        <meshBasicMaterial color="#ffffff" transparent opacity={0.0} side={THREE.FrontSide}/>
       </mesh>
-      <mesh position={[0, panelH/2 - 0.04, 0.001]}>
-        <planeGeometry args={[panelW, 0.08]}/>
-        <meshBasicMaterial color={activeMeta.color} transparent opacity={0.95}/>
-      </mesh>
-      <Text position={[0, panelH/2 - 0.16, 0.002]} fontSize={0.13} color="#222244"
-        anchorX="center" anchorY="middle" fontWeight={700}>
-        {currentPhase ? `Phase: ${PHASE_LABELS[currentPhase] || currentPhase}` : 'Agents Active'}
-      </Text>
-      <mesh position={[0, panelH/2 - 0.3, 0.001]}>
-        <planeGeometry args={[panelW - 0.2, 0.01]}/>
-        <meshBasicMaterial color="#ddddee"/>
-      </mesh>
-      {rows.map((row, i) => {
-        const rowY = panelH/2 - 0.46 - i * 0.36
-        const isActive = row.status === 'active'
-        return (
-          <group key={row.id} position={[0, rowY, 0.002]}>
-            <mesh position={[-panelW/2 + 0.22, 0, 0]}>
-              <circleGeometry args={[0.08, 12]}/>
-              <meshBasicMaterial color={row.meta.color}/>
-            </mesh>
-            {isActive && (
-              <PulsingRing color={row.meta.color} y={rowY}/>
-            )}
-            <Text position={[-panelW/2 + 0.48, 0.08, 0]} fontSize={0.13}
-              color={isActive ? row.meta.color : '#445566'}
-              anchorX="left" anchorY="middle" fontWeight={isActive ? 700 : 400}>
-              {row.meta.label}
+      {activeMeta && (
+        <>
+          <mesh position={[0, panelH/2 - 0.04, 0.001]}>
+            <planeGeometry args={[panelW, 0.08]}/>
+            <meshBasicMaterial color={activeMeta.color} transparent opacity={0.95}/>
+          </mesh>
+          <Text position={[0, panelH/2 - 0.16, 0.002]} fontSize={0.13} color="#222244"
+            anchorX="center" anchorY="middle" fontWeight={700}>
+            {currentPhase ? `Phase: ${PHASE_LABELS[currentPhase] || currentPhase}` : 'Agents Active'}
+          </Text>
+          <mesh position={[0, panelH/2 - 0.3, 0.001]}>
+            <planeGeometry args={[panelW - 0.2, 0.01]}/>
+            <meshBasicMaterial color="#ddddee"/>
+          </mesh>
+          {rows.map((row, i) => {
+            const rowY = panelH/2 - 0.46 - i * 0.36
+            const isActive = row.status === 'active'
+            return (
+              <group key={row.id} position={[0, rowY, 0.002]}>
+                <mesh position={[-panelW/2 + 0.22, 0, 0]}>
+                  <circleGeometry args={[0.08, 12]}/>
+                  <meshBasicMaterial color={row.meta.color}/>
+                </mesh>
+                {isActive && <PulsingRing color={row.meta.color}/>}
+                <Text position={[-panelW/2 + 0.48, 0.08, 0]} fontSize={0.13}
+                  color={isActive ? row.meta.color : '#445566'}
+                  anchorX="left" anchorY="middle" fontWeight={isActive ? 700 : 400}>
+                  {row.meta.label}
+                </Text>
+                <Text position={[-panelW/2 + 0.48, -0.1, 0]} fontSize={0.1}
+                  color={isActive ? '#334455' : '#778899'}
+                  anchorX="left" anchorY="middle">
+                  {isActive ? `▶ ${truncActive}` : `◉ ${row.msg}`}
+                </Text>
+                {isActive && seatedIds.length > 0 && (
+                  <Text position={[panelW/2 - 0.35, 0, 0]} fontSize={0.18} color={row.meta.color}
+                    anchorX="right" anchorY="middle">
+                    ›
+                  </Text>
+                )}
+              </group>
+            )
+          })}
+          {seatedIds.length > 0 && (
+            <Text position={[0, -panelH/2 + 0.14, 0.002]} fontSize={0.1} color="#667788"
+              anchorX="center" anchorY="middle">
+              Output flowing to: {seatedIds.map(id => AGENT_META[id]?.label || id).join(' → ')}
             </Text>
-            <Text position={[-panelW/2 + 0.48, -0.1, 0]} fontSize={0.1}
-              color={isActive ? '#334455' : '#778899'}
-              anchorX="left" anchorY="middle">
-              {isActive ? `▶ ${truncActive}` : `◉ ${row.msg}`}
-            </Text>
-            {isActive && seatedIds.length > 0 && (
-              <Text position={[panelW/2 - 0.35, 0, 0]} fontSize={0.18} color={row.meta.color}
-                anchorX="right" anchorY="middle">
-                ›
-              </Text>
-            )}
-          </group>
-        )
-      })}
-      {seatedIds.length > 0 && (
-        <Text position={[0, -panelH/2 + 0.14, 0.002]} fontSize={0.1} color="#667788"
-          anchorX="center" anchorY="middle">
-          Output flowing to: {seatedIds.map(id => AGENT_META[id]?.label || id).join(' → ')}
-        </Text>
+          )}
+        </>
       )}
     </group>
   )
@@ -1231,10 +1258,6 @@ function CustomAgentNode({ agent, slotIndex, activeAgent, lastMessage }) {
   )
 }
 
-// FIX: ActiveAgentHUD moved from world-space 3D geometry (position={[-5.5,5.8,-8]})
-// to a <Html> overlay. The previous world-space implementation meant the panel's
-// rendered position depended on the camera matrix — any camera drift made it
-// visually jump. Html overlay is camera-independent and always pixel-perfect.
 function ActiveAgentHUD({ activeAgent, agents, lastMessages }) {
   if (!activeAgent) return null
 
@@ -1281,8 +1304,6 @@ function ActiveAgentHUD({ activeAgent, agents, lastMessages }) {
   )
 }
 
-// FIX: CustomCommArc — deps corrected from [posA, posB] array references
-// (which are new on every render) to string keys for stable memoisation.
 function CustomCommArc({ posA, posB, color, active }) {
   const ref    = useRef()
   const dotRef = useRef()
@@ -1390,6 +1411,8 @@ export default function AgentScene3D({activeAgent,agents,lastMessages,currentPha
         3. enableDamping         → all transitions ease smoothly
         4. autoRotateSpeed omitted from props → managed by SmoothAutoRotate via ref
         5. maxDistance 28        → prevents extreme far positions
+        6. SmoothAutoRotate calls controls.update(delta) after mutating speed
+           so the damped integrator sees the correct state each frame
       */}
       <OrbitControls
         ref={controlsRef}
