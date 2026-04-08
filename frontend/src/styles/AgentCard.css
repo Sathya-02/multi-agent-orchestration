@@ -1,7 +1,13 @@
-/* AgentCard done state — complements App.css agent-card styles */
+/* AgentCard done state */
 .agent-card.done {
-  opacity: 0.65;
+  opacity: 0.52;
 }
 .agent-card.done .agent-indicator {
   background: var(--success);
+  box-shadow: 0 0 6px rgba(34,197,94,0.4);
+}
+
+/* Active card pulse ring */
+.agent-card.active .agent-avatar {
+  box-shadow: 0 0 0 2px rgba(99,102,241,0.3);
 }
