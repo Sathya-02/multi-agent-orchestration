@@ -1,7 +1,13 @@
-import { useRef, useMemo } from 'react'
-import { Canvas, useFrame } from '@react-three/fiber'
+import { useRef, useMemo, useEffect } from 'react'
+import { Canvas, useFrame, useThree } from '@react-three/fiber'
 import { OrbitControls, Text, Sparkles, RoundedBox } from '@react-three/drei'
 import * as THREE from 'three'
+
+// ─── Static camera config ────────────────────────────────────────────────────
+// IMPORTANT: must NOT be an inline object literal on the <Canvas> prop —
+// a new object ref on every render causes R3F to reset the camera each cycle,
+// producing the jarring zoom-out on prop changes.
+const CAMERA_CONFIG = { position: [0, 12, 19], fov: 43 }
 
 const AGENT_META = {
   coordinator: {
@@ -36,6 +42,29 @@ const HANDSHAKE_PAIRS = [
   ['researcher','analyst'],['analyst','writer'],
 ]
 function isDirectPair(a,b){return HANDSHAKE_PAIRS.some(([x,y])=>(x===a&&y===b)||(x===b&&y===a))}
+
+// ─── Smooth auto-rotate controller ───────────────────────────────────────────
+// Adjusts OrbitControls.autoRotateSpeed each frame via lerp so speed transitions
+// never cause the internal orbit recalculation that yanks the camera outward.
+function SmoothAutoRotate({ controlsRef, activeAgent }) {
+  const targetSpeed = useRef(activeAgent ? 0.42 : 0.1)
+
+  useEffect(() => {
+    targetSpeed.current = activeAgent ? 0.42 : 0.1
+  }, [activeAgent])
+
+  useFrame((_, delta) => {
+    if (!controlsRef.current) return
+    const current = controlsRef.current.autoRotateSpeed
+    const target  = targetSpeed.current
+    if (Math.abs(current - target) > 0.001) {
+      // Lerp at ~2 units/sec so the change is invisible to the user
+      controlsRef.current.autoRotateSpeed += (target - current) * Math.min(delta * 2, 1)
+    }
+  })
+
+  return null
+}
 
 function OfficeRoom() {
   return (
@@ -691,7 +720,6 @@ function SpeechBubble({color,active,agentId,lastMessage,isAtTable,currentPhase})
     bgRef.current.material.opacity=shown?0.9:0
   })
   const rawText = lastMessage || SPEECH[agentId] || agentId
-  // Truncate to fit bubble
   const text = rawText.length > 26 ? rawText.slice(0,24)+'…' : rawText
   return (
     <group>
@@ -709,7 +737,6 @@ function SpeechBubble({color,active,agentId,lastMessage,isAtTable,currentPhase})
   )
 }
 
-/* Smaller bubble shown above agent when sitting at meeting table */
 function TableSeatBubble({color,label,agentId}){
   const ref=useRef()
   useFrame(({clock})=>{
@@ -777,7 +804,6 @@ function CommArc({agentA,agentB,active}){
   const posA    = AGENT_META[agentA]?.deskPos || [0,0,0]
   const posB    = AGENT_META[agentB]?.deskPos || [0,0,0]
 
-  // Build the curve once — reused for both the line and the dot position
   const curve = useMemo(() => {
     const a   = new THREE.Vector3(posA[0], 2.1, posA[2])
     const b   = new THREE.Vector3(posB[0], 2.1, posB[2])
@@ -796,7 +822,6 @@ function CommArc({agentA,agentB,active}){
     }
     if (dotRef.current) {
       if (active) {
-        // Dot travels from A→B, loops every 2 seconds
         const progress = (t % 2) / 2
         const pt = curve.getPoint(progress)
         dotRef.current.position.copy(pt)
@@ -813,7 +838,6 @@ function CommArc({agentA,agentB,active}){
       <line geometry={geom} ref={lineRef}>
         <lineBasicMaterial color={color} transparent opacity={0} linewidth={2}/>
       </line>
-      {/* Travelling data packet dot */}
       <mesh ref={dotRef} position={posA}>
         <sphereGeometry args={[0.1, 10, 10]}/>
         <meshBasicMaterial color={color} transparent opacity={0}/>
@@ -841,7 +865,6 @@ function Lighting({activeAgent}){
 function BlackboardStatus({ currentWorker, activeAgent, lastMessages }) {
   const bgRef = useRef()
 
-  // Fade panel in/out when something is working
   useFrame(({ clock }) => {
     if (!bgRef.current) return
     const t = clock.getElapsedTime()
@@ -850,8 +873,6 @@ function BlackboardStatus({ currentWorker, activeAgent, lastMessages }) {
   })
 
   const worker = currentWorker || {}
-
-  // Prefer structured fields from agent_working; fall back to AGENT_META + lastMessages
   const agentId    = worker.agent || activeAgent
   const agentMeta  = agentId ? AGENT_META[agentId] : null
   const agentLabel = worker.label || agentMeta?.label || agentId
@@ -867,12 +888,10 @@ function BlackboardStatus({ currentWorker, activeAgent, lastMessages }) {
 
   return (
     <group position={[0, 3.9, -11.8]}>
-      {/* Dark overlay on top of the existing board */}
       <mesh ref={bgRef} position={[0, 0, 0.01]}>
         <planeGeometry args={[9.4, 1.4]} />
         <meshBasicMaterial color="#020617" transparent opacity={0.0} />
       </mesh>
-
       <Text
         position={[0, 0.42, 0.02]}
         fontSize={0.22}
@@ -884,7 +903,6 @@ function BlackboardStatus({ currentWorker, activeAgent, lastMessages }) {
       >
         CURRENT PIPELINE STAGE
       </Text>
-
       {mainLine && (
         <Text
           position={[0, 0.06, 0.02]}
@@ -896,7 +914,6 @@ function BlackboardStatus({ currentWorker, activeAgent, lastMessages }) {
           {mainLine}
         </Text>
       )}
-
       {toolLine && (
         <Text
           position={[0, -0.32, 0.02]}
@@ -912,17 +929,10 @@ function BlackboardStatus({ currentWorker, activeAgent, lastMessages }) {
   )
 }
 
-/* ─────────────────────────────────────────────────────────────
-   TABLE ACTIVITY PANEL
-   Floating above the meeting table — shows who is seated and
-   what information is being passed or actioned right now.
-───────────────────────────────────────────────────────────── */
 function TableActivityPanel({activeAgent, lastMessages, currentPhase}) {
   const panelRef = useRef()
   const bgRef    = useRef()
 
-  // Which agents are "at the table" right now?
-  // Active agent = working; their direct partners = seated at table
   const seatedIds = AGENT_IDS.filter(id => {
     if (!activeAgent) return false
     if (id === activeAgent) return false
@@ -956,7 +966,6 @@ function TableActivityPanel({activeAgent, lastMessages, currentPhase}) {
   const activeMsg = lastMessages?.[activeAgent] || PHASE_LABELS[activeAgent] || activeAgent
   const truncActive = activeMsg.length > 32 ? activeMsg.slice(0,30)+'…' : activeMsg
 
-  // Build display rows: active agent on top, then seated partners
   const rows = [
     { id: activeAgent, meta: activeMeta, msg: truncActive, status: 'active' },
     ...seatedIds.map(id => {
@@ -973,54 +982,44 @@ function TableActivityPanel({activeAgent, lastMessages, currentPhase}) {
 
   return (
     <group ref={panelRef} position={[0, 1.85, 0]}>
-      {/* Panel background */}
       <mesh ref={bgRef} position={[0, 0, 0]}>
         <planeGeometry args={[panelW, panelH]}/>
         <meshBasicMaterial color="#ffffff" transparent opacity={0.88} side={THREE.DoubleSide}/>
       </mesh>
-      {/* Panel border top strip — active agent colour */}
       <mesh position={[0, panelH/2 - 0.04, 0.001]}>
         <planeGeometry args={[panelW, 0.08]}/>
         <meshBasicMaterial color={activeMeta.color} transparent opacity={0.95}/>
       </mesh>
-      {/* Header label */}
       <Text position={[0, panelH/2 - 0.16, 0.002]} fontSize={0.13} color="#222244"
         anchorX="center" anchorY="middle" fontWeight={700}>
         {currentPhase ? `Phase: ${PHASE_LABELS[currentPhase] || currentPhase}` : 'Agents Active'}
       </Text>
-      {/* Divider */}
       <mesh position={[0, panelH/2 - 0.3, 0.001]}>
         <planeGeometry args={[panelW - 0.2, 0.01]}/>
         <meshBasicMaterial color="#ddddee"/>
       </mesh>
-      {/* Agent rows */}
       {rows.map((row, i) => {
         const rowY = panelH/2 - 0.46 - i * 0.36
         const isActive = row.status === 'active'
         return (
           <group key={row.id} position={[0, rowY, 0.002]}>
-            {/* Colour dot */}
             <mesh position={[-panelW/2 + 0.22, 0, 0]}>
               <circleGeometry args={[0.08, 12]}/>
               <meshBasicMaterial color={row.meta.color}/>
             </mesh>
-            {/* Pulse ring around active dot */}
             {isActive && (
               <PulsingRing color={row.meta.color} y={rowY}/>
             )}
-            {/* Agent name + status badge */}
             <Text position={[-panelW/2 + 0.48, 0.08, 0]} fontSize={0.13}
               color={isActive ? row.meta.color : '#445566'}
               anchorX="left" anchorY="middle" fontWeight={isActive ? 700 : 400}>
               {row.meta.label}
             </Text>
-            {/* Status badge */}
             <Text position={[-panelW/2 + 0.48, -0.1, 0]} fontSize={0.1}
               color={isActive ? '#334455' : '#778899'}
               anchorX="left" anchorY="middle">
               {isActive ? `▶ ${truncActive}` : `◉ ${row.msg}`}
             </Text>
-            {/* Arrow showing data flow direction when active */}
             {isActive && seatedIds.length > 0 && (
               <Text position={[panelW/2 - 0.35, 0, 0]} fontSize={0.18} color={row.meta.color}
                 anchorX="right" anchorY="middle">
@@ -1030,7 +1029,6 @@ function TableActivityPanel({activeAgent, lastMessages, currentPhase}) {
           </group>
         )
       })}
-      {/* "Data flowing to" footer when there are seated agents */}
       {seatedIds.length > 0 && (
         <Text position={[0, -panelH/2 + 0.14, 0.002]} fontSize={0.1} color="#667788"
           anchorX="center" anchorY="middle">
@@ -1041,7 +1039,6 @@ function TableActivityPanel({activeAgent, lastMessages, currentPhase}) {
   )
 }
 
-/* Small pulsing ring — drawn as an animated torus around the active dot */
 function PulsingRing({color}) {
   const ref = useRef()
   useFrame(({ clock }) => {
@@ -1058,27 +1055,16 @@ function PulsingRing({color}) {
   )
 }
 
-
-/* ─────────────────────────────────────────────────────────────
-   CUSTOM AGENT DESK
-   Dynamically placed for any agent not in the built-in AGENT_META.
-   Position slots arranged along the side walls.
-───────────────────────────────────────────────────────────── */
 const CUSTOM_DESK_SLOTS = [
-  // Front row — clearly visible from default camera
   [-3.5, 0,  5.5],
   [ 3.5, 0,  5.5],
-  // Back sides
   [-7.5, 0, -1.5],
   [ 7.5, 0, -1.5],
-  // Mid sides
   [-7.5, 0,  2.5],
   [ 7.5, 0,  2.5],
-  // Extra front
   [ 0,   0,  6.5],
 ]
 
-/* Picks a body shape variant by slot index so agents look distinct */
 function CustomRobotBody({ color, isActive, slotIndex }) {
   const bodyRef = useRef()
   const headRef = useRef()
@@ -1094,7 +1080,6 @@ function CustomRobotBody({ color, isActive, slotIndex }) {
     if (rARef.current)   rARef.current.rotation.x   = isActive ? -Math.sin(t*2)*0.25 : 0
   })
 
-  // Variant 0 — tall slim chrome
   if (variant === 0) return (
     <group>
       {[[-0.12,0.45,0],[0.12,0.45,0]].map(([x,y,z],i)=>(
@@ -1113,7 +1098,6 @@ function CustomRobotBody({ color, isActive, slotIndex }) {
     </group>
   )
 
-  // Variant 1 — stocky orange industrial
   if (variant === 1) return (
     <group>
       {[[-0.17,0.46,0],[0.17,0.46,0]].map(([x,y,z],i)=>(
@@ -1131,7 +1115,6 @@ function CustomRobotBody({ color, isActive, slotIndex }) {
     </group>
   )
 
-  // Variant 2 — round green compact
   if (variant === 2) return (
     <group scale={[0.9,0.9,0.9]}>
       {[[-0.13,0.44,0],[0.13,0.44,0]].map(([x,y,z],i)=>(
@@ -1150,7 +1133,6 @@ function CustomRobotBody({ color, isActive, slotIndex }) {
     </group>
   )
 
-  // Variant 3 — purple orb-head futuristic
   return (
     <group>
       {[[-0.13,0.44,0],[0.13,0.44,0]].map(([x,y,z],i)=>(
@@ -1194,7 +1176,6 @@ function CustomAgentNode({ agent, slotIndex, activeAgent, lastMessage }) {
 
   return (
     <group position={deskPos}>
-      {/* Desk */}
       <mesh position={[0,0.44,0]} castShadow receiveShadow>
         <boxGeometry args={[2.2,0.08,1.2]}/><meshStandardMaterial color="#e8e2d8" roughness={0.22} metalness={0.06}/>
       </mesh>
@@ -1204,21 +1185,17 @@ function CustomAgentNode({ agent, slotIndex, activeAgent, lastMessage }) {
       {[[-0.95,0.22,-0.5],[0.95,0.22,-0.5],[-0.95,0.22,0.5],[0.95,0.22,0.5]].map(([x,y,z],i)=>(
         <mesh key={i} position={[x,y,z]}><boxGeometry args={[0.07,0.44,0.07]}/><meshStandardMaterial color="#8a9aaa" roughness={0.1} metalness={0.96}/></mesh>
       ))}
-      {/* Monitor */}
       <mesh position={[0,0.94,-0.34]}><boxGeometry args={[0.88,0.54,0.02]}/><meshStandardMaterial color="#080c14" roughness={0.4} metalness={0.85}/></mesh>
       <mesh ref={screenRef} position={[0,0.94,-0.35]}><boxGeometry args={[0.82,0.48,0.02]}/><meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.07} roughness={0.05} metalness={0.72}/></mesh>
-      {/* Nameplate */}
       <mesh ref={plateRef} position={[0,0.46,0.62]}><boxGeometry args={[1.1,0.1,0.04]}/><meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.38} roughness={0.08} metalness={0.72}/></mesh>
       <Text position={[0,0.463,0.66]} fontSize={0.11} color="#ffffff"
         anchorX="center" anchorY="middle" outlineWidth={0.006} outlineColor="#000000">
         {label}
       </Text>
-      {/* Role sub-label */}
       <Text position={[0,0.36,0.65]} fontSize={0.078} color="#aaccee"
         anchorX="center" anchorY="middle">
         {agent.role?.slice(0,20) || ''}
       </Text>
-      {/* Varied robot avatar */}
       <group position={[0,0,0.82]}>
         <CustomRobotBody color={color} isActive={isActive} slotIndex={slotIndex}/>
         {isActive && <Sparkles count={14} scale={1.4} size={1.4} speed={0.46} color={color} position={[0,1,0]}/>}
@@ -1238,12 +1215,6 @@ function CustomAgentNode({ agent, slotIndex, activeAgent, lastMessage }) {
   )
 }
 
-
-/* ─────────────────────────────────────────────────────────────
-   ACTIVE AGENT HUD
-   Prominent overlay in top-left of the canvas showing which
-   agent is currently working, with pulsing colour indicator.
-───────────────────────────────────────────────────────────── */
 function ActiveAgentHUD({ activeAgent, agents, lastMessages }) {
   const ringRef = useRef()
   const dotRef  = useRef()
@@ -1256,7 +1227,6 @@ function ActiveAgentHUD({ activeAgent, agents, lastMessages }) {
 
   if (!activeAgent) return null
 
-  // Find metadata for the active agent (could be builtin or custom)
   const allMeta = {
     ...Object.fromEntries(Object.entries(AGENT_META)),
     ...Object.fromEntries(
@@ -1274,17 +1244,14 @@ function ActiveAgentHUD({ activeAgent, agents, lastMessages }) {
 
   return (
     <group position={[-5.5, 5.8, -8]}>
-      {/* Background panel */}
       <mesh position={[0,0,0]}>
         <planeGeometry args={[3.8, 1.1]}/>
         <meshBasicMaterial color="#ffffff" transparent opacity={0.92} side={THREE.DoubleSide}/>
       </mesh>
-      {/* Left accent stripe */}
       <mesh position={[-1.82,0,0.001]}>
         <planeGeometry args={[0.14,1.1]}/>
         <meshBasicMaterial color={color}/>
       </mesh>
-      {/* Pulsing ring indicator */}
       <mesh ref={ringRef} position={[-1.38,0.18,0.002]}>
         <torusGeometry args={[0.12,0.02,8,24]}/>
         <meshBasicMaterial color={color}/>
@@ -1293,23 +1260,19 @@ function ActiveAgentHUD({ activeAgent, agents, lastMessages }) {
         <circleGeometry args={[0.08,12]}/>
         <meshBasicMaterial color={color} transparent opacity={0.8}/>
       </mesh>
-      {/* "NOW ACTIVE" label */}
       <Text position={[-0.5,0.3,0.003]} fontSize={0.1} color="#778899"
         anchorX="left" anchorY="middle" fontWeight={700}
         letterSpacing={0.08}>
         NOW ACTIVE
       </Text>
-      {/* Agent name */}
       <Text position={[-0.5,0.06,0.003]} fontSize={0.2} color={color}
         anchorX="left" anchorY="middle" fontWeight={700}>
         {label}
       </Text>
-      {/* Role */}
       <Text position={[-0.5,-0.18,0.003]} fontSize={0.12} color="#334455"
         anchorX="left" anchorY="middle">
         {role}
       </Text>
-      {/* Last message */}
       {truncMsg && (
         <Text position={[0,-0.36,0.003]} fontSize={0.1} color="#667788"
           anchorX="center" anchorY="middle">
@@ -1320,8 +1283,6 @@ function ActiveAgentHUD({ activeAgent, agents, lastMessages }) {
   )
 }
 
-
-/* Arc between coordinator and a custom agent desk */
 function CustomCommArc({ posA, posB, color, active }) {
   const ref  = useRef()
   const dotRef = useRef()
@@ -1361,10 +1322,18 @@ function CustomCommArc({ posA, posB, color, active }) {
 }
 
 export default function AgentScene3D({activeAgent,agents,lastMessages,currentPhase,currentWorker}){
-  // Only render active agents in the scene
   const activeAgentsList = agents ? agents.filter(a => a.active !== false) : null
+
+  // Stable ref for OrbitControls — used by SmoothAutoRotate to update speed
+  // without triggering a React re-render or camera reset.
+  const controlsRef = useRef()
+
   return (
-    <Canvas camera={{position:[0,12,19],fov:43}} style={{width:'100%',height:'100%',background:'#f0f2f5'}} shadows>
+    <Canvas
+      camera={CAMERA_CONFIG}
+      style={{width:'100%',height:'100%',background:'#f0f2f5'}}
+      shadows
+    >
       <Lighting activeAgent={activeAgent}/>
       <OfficeRoom/>
       <BlackboardStatus
@@ -1379,7 +1348,6 @@ export default function AgentScene3D({activeAgent,agents,lastMessages,currentPha
         <AgentNode key={id} agentId={id} activeAgent={activeAgent}
           lastMessage={lastMessages?.[id]||''} currentPhase={currentPhase}/>
       ))}
-      {/* ── Custom / user-created agents ── */}
       {(activeAgentsList||[])
         .filter(a => !AGENT_META[a.id])
         .map((a,idx) => (
@@ -1388,7 +1356,6 @@ export default function AgentScene3D({activeAgent,agents,lastMessages,currentPha
             lastMessage={lastMessages?.[a.id]||''}/>
         ))
       }
-      {/* CommArcs from coordinator to each custom agent */}
       {(activeAgentsList||[])
         .filter(a => !AGENT_META[a.id])
         .map((a,idx) => {
@@ -1404,10 +1371,34 @@ export default function AgentScene3D({activeAgent,agents,lastMessages,currentPha
       }
       <TableActivityPanel activeAgent={activeAgent} lastMessages={lastMessages} currentPhase={currentPhase}/>
       <ActiveAgentHUD activeAgent={activeAgent} agents={activeAgentsList} lastMessages={lastMessages}/>
-      <OrbitControls enablePan={false} minDistance={9} maxDistance={32}
-        minPolarAngle={Math.PI/10} maxPolarAngle={Math.PI/2.1}
-        autoRotate autoRotateSpeed={activeAgent?0.42:0.1}
-        target={[0,1.7,0]}/>
+
+      {/*
+        OrbitControls — key fixes vs previous version:
+        1. makeDefault → registers as R3F's primary camera controller
+        2. enableDamping + dampingFactor → all camera moves ease smoothly
+        3. autoRotateSpeed is intentionally omitted here; SmoothAutoRotate
+           sets it via ref each frame so React never sees the prop change
+           and therefore never resets the camera.
+        4. maxDistance tightened from 32→28 to prevent extreme far positions
+           that amplified any residual jitter.
+      */}
+      <OrbitControls
+        ref={controlsRef}
+        makeDefault
+        enablePan={false}
+        enableDamping
+        dampingFactor={0.08}
+        minDistance={10}
+        maxDistance={28}
+        minPolarAngle={Math.PI/10}
+        maxPolarAngle={Math.PI/2.1}
+        autoRotate
+        autoRotateSpeed={0.1}
+        target={[0,1.7,0]}
+      />
+
+      {/* Smoothly transitions autoRotateSpeed without touching camera position */}
+      <SmoothAutoRotate controlsRef={controlsRef} activeAgent={activeAgent}/>
     </Canvas>
   )
 }
