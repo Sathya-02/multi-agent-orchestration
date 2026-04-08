@@ -97,8 +97,7 @@ export default function App() {
 
   /* ── Settings / Telegram / Self-Improver state ───────── */
   const [showSettings,      setShowSettings]      = useState(false)
-  // FIX: default to 'websearch' to match the first rendered tab
-  const [settingsTab,       setSettingsTab]       = useState('websearch')
+  const [settingsTab,       setSettingsTab]       = useState('telegram') // telegram | improver | practices
   const [tgConfig,          setTgConfig]          = useState({ bot_token:'', allowed_chat_ids:'', notify_chat_id:'', enabled:false })
   const [tgSaving,          setTgSaving]          = useState(false)
   const [tgTesting,         setTgTesting]         = useState(false)
@@ -613,6 +612,7 @@ export default function App() {
       fetchAgents()
     }
     if (msg.type === 'fs_config_updated') {
+      // Server pushed the full updated config — apply immediately without a round-trip
       if (msg.config) {
         setFsConfig(msg.config)
         setOutputDirInput(msg.config.output_dir || '')
@@ -692,6 +692,7 @@ export default function App() {
     await fetchAgents()
 
     if (data.duplicate) {
+      // Show duplicate warning inline — do NOT switch to list
       addLog('system', '⚙️ System',
         `⚠️ Role "${newAgentForm.role}" already exists (${data.agent?.label}). No duplicate created.`)
       return
@@ -712,38 +713,6 @@ export default function App() {
   const handleDeleteAgent = async (id) => {
     await fetch(`${API_URL}/agents/${id}`, { method:'DELETE' })
     await fetchAgents()
-  }
-
-  /* ── FIX: Missing handleToggleActive ──────────────────── */
-  const handleToggleActive = async (agent) => {
-    const ep = agent.active === false ? 'activate' : 'deactivate'
-    await fetch(`${API_URL}/agents/${agent.id}/${ep}`, { method: 'POST' })
-    await fetchAgents()
-  }
-
-  /* ── FIX: Missing handleOpenSkills ───────────────────── */
-  const handleOpenSkills = async (agent) => {
-    setSkillsAgentId(agent.id)
-    setSkillsText('')
-    setAgentTab('skills')
-    try {
-      const d = await fetch(`${API_URL}/agents/${agent.id}/skills`).then(r => r.json())
-      setSkillsText(d.content || '')
-    } catch { setSkillsText('# Failed to load SKILLS.md') }
-  }
-
-  /* ── handleSaveSkills (companion to handleOpenSkills) ─── */
-  const handleSaveSkills = async () => {
-    if (!skillsAgentId) return
-    setSkillsSaving(true)
-    try {
-      await fetch(`${API_URL}/agents/${skillsAgentId}/skills`, {
-        method: 'PUT', headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ text: skillsText }),
-      })
-      addLog('system','⚙️ System', `📄 SKILLS.md saved for ${skillsAgentId}`)
-      await fetchAgents()
-    } catch {} finally { setSkillsSaving(false) }
   }
 
   /* ── Spawn decisions ──────────────────────────────────── */
@@ -827,11 +796,8 @@ export default function App() {
             <span className="model-chevron">{showModelPanel?'▲':'▼'}</span>
           </button>
           <div style={{width:1,height:16,background:'rgba(99,102,241,0.3)',margin:'0 6px'}}/>
-          {/* FIX: Proper status dot with circle child element */}
-          <div className={`status-dot ${connected ? 'connected' : ''}`}>
-            <span className="status-dot-circle"/>
-            {connected ? 'Connected' : 'Connecting…'}
-          </div>
+          <div className={`status-dot ${connected?'':'inactive'}`}/>
+          {connected?'Connected':'Connecting…'}
           {jobId && <span style={{marginLeft:8,color:'#6366f1',fontSize:11}}>Job #{jobId}</span>}
         </div>
       </header>
@@ -1236,7 +1202,7 @@ export default function App() {
             </div>
           )}
 
-          {/* Edit agent form */}
+                    {/* Edit agent form */}
           {agentTab === 'edit' && editingAgent && (
             <div className="agent-form">
               {[
@@ -1523,224 +1489,789 @@ export default function App() {
               <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16,
                 padding:'10px 14px',background:'rgba(99,102,241,.06)',
                 border:'1px solid rgba(99,102,241,.2)',borderRadius:8}}>
-                <div style={{flex:1}}>
-                  <div style={{fontSize:13,fontWeight:600,color:'var(--text)'}}>Enable Web Search</div>
-                  <div style={{fontSize:11,color:'var(--tx-muted)',marginTop:2}}>
-                    Agents will search the web when they need current information
-                  </div>
-                </div>
-                <label className="toggle-switch">
-                  <input type="checkbox" checked={wsConfig.enabled}
-                    onChange={e => setWsConfig(c=>({...c,enabled:e.target.checked}))} />
-                  <span className="toggle-track"/>
+                <label className="settings-toggle-label" style={{flex:1,fontWeight:600,fontSize:13}}>
+                  <input type="checkbox" checked={!!wsConfig.enabled}
+                    onChange={e => setWsConfig(c=>({...c,enabled:e.target.checked}))}
+                    style={{marginRight:8,transform:'scale(1.2)'}}/>
+                  Enable Real-Time Web Search
                 </label>
+                <span style={{fontSize:12,fontWeight:700,color:wsConfig.enabled?'#34d399':'#64748b'}}>
+                  {wsConfig.enabled ? '● LIVE' : '○ MOCK'}
+                </span>
               </div>
 
+              {/* Provider */}
               <div className="form-group">
-                <label>Provider</label>
+                <label>Search Provider</label>
                 <select value={wsConfig.provider}
-                  onChange={e => setWsConfig(c=>({...c,provider:e.target.value}))}>
-                  <option value="auto">Auto (try all)</option>
-                  <option value="duckduckgo">DuckDuckGo</option>
+                  onChange={e => setWsConfig(c=>({...c,provider:e.target.value}))}
+                  style={{background:'rgba(30,41,59,.8)',border:'1px solid var(--bd-mid)',
+                    borderRadius:6,padding:'8px 10px',color:'var(--tx-primary)',
+                    fontSize:12,width:'100%'}}>
+                  <option value="auto">Auto-detect (recommended)</option>
+                  <option value="duckduckgo">DuckDuckGo only</option>
                   <option value="wikipedia">Wikipedia only</option>
+                  <option value="mock">Mock (offline testing)</option>
                 </select>
-              </div>
-
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Max Results</label>
-                  <input type="number" min={1} max={20} value={wsConfig.max_results}
-                    onChange={e => setWsConfig(c=>({...c,max_results:+e.target.value}))} />
-                </div>
-                <div className="form-group">
-                  <label>Timeout (s)</label>
-                  <input type="number" min={5} max={60} value={wsConfig.timeout_seconds}
-                    onChange={e => setWsConfig(c=>({...c,timeout_seconds:+e.target.value}))} />
+                <div style={{fontSize:10,color:'var(--tx-muted)',marginTop:4}}>
+                  Auto: weather → wttr.in · time → WorldTimeAPI · currency → ExchangeRate-API · general → DuckDuckGo
                 </div>
               </div>
 
-              <div style={{display:'flex',gap:8}}>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                <div className="form-group">
+                  <label>Max results</label>
+                  <input type="number" min="1" max="10" value={wsConfig.max_results}
+                    onChange={e => setWsConfig(c=>({...c,max_results:parseInt(e.target.value)||5}))}/>
+                </div>
+                <div className="form-group">
+                  <label>Timeout (seconds)</label>
+                  <input type="number" min="3" max="30" value={wsConfig.timeout_seconds}
+                    onChange={e => setWsConfig(c=>({...c,timeout_seconds:parseInt(e.target.value)||10}))}/>
+                </div>
+              </div>
+
+              <div style={{display:'flex',flexWrap:'wrap',gap:16,marginBottom:14}}>
+                {[
+                  ['safe_search',      'Safe search'],
+                  ['fallback_to_mock', 'Fall back to mock if search fails'],
+                ].map(([key, label]) => (
+                  <label key={key} className="settings-toggle-label">
+                    <input type="checkbox" checked={!!wsConfig[key]}
+                      onChange={e => setWsConfig(c=>({...c,[key]:e.target.checked}))}
+                      style={{marginRight:6}}/>
+                    {label}
+                  </label>
+                ))}
+              </div>
+
+              <div style={{display:'flex',gap:8,marginBottom:14}}>
                 <button className="run-btn" style={{flex:1}} onClick={handleSaveWsConfig} disabled={wsSaving}>
                   {wsSaving ? '⟳ Saving…' : '💾 Save Config'}
                 </button>
-                <button className="run-btn" style={{flex:1,background:'rgba(30,41,59,.8)'}} onClick={handleTestWsProviders} disabled={wsTesting}>
-                  {wsTesting ? '⟳ Testing…' : '🧪 Test Providers'}
+                <button className="run-btn"
+                  style={{flex:'0 0 140px',background:'rgba(99,102,241,.15)',
+                    border:'1px solid rgba(99,102,241,.3)',color:'#a5b4fc'}}
+                  onClick={handleTestWsProviders} disabled={wsTesting}>
+                  {wsTesting ? '⟳ Testing…' : '🔬 Test All Providers'}
                 </button>
               </div>
 
-              <div className="form-group">
-                <label>Test Query</label>
+              {/* Live query tester */}
+              <div style={{borderTop:'1px solid var(--bd-subtle)',paddingTop:14}}>
+                <div className="settings-cmd-title" style={{marginBottom:8}}>Live Query Tester</div>
                 <div style={{display:'flex',gap:8}}>
-                  <input value={wsTestQuery} onChange={e=>setWsTestQuery(e.target.value)}
-                    placeholder="weather in Tokyo" style={{flex:1}} className="topic-input"
-                    onKeyDown={e=>e.key==='Enter'&&handleRunWsQuery()} />
-                  <button className="fs-apply-btn" onClick={handleRunWsQuery} disabled={wsTesting}>
-                    {wsTesting ? '…' : '▶'}
+                  <input value={wsTestQuery}
+                    onChange={e => setWsTestQuery(e.target.value)}
+                    onKeyDown={e => e.key==='Enter' && handleRunWsQuery()}
+                    placeholder="weather in Mumbai  |  USD to INR  |  today's date"
+                    style={{flex:1}}/>
+                  <button className="run-btn"
+                    style={{flex:'0 0 80px',padding:'8px 10px',fontSize:12}}
+                    onClick={handleRunWsQuery} disabled={wsTesting}>
+                    Search
                   </button>
                 </div>
+                {!wsConfig.enabled && (
+                  <div style={{fontSize:10,color:'#f59e0b',marginTop:4}}>
+                    ⚠️ Enable real-time search above then save before testing
+                  </div>
+                )}
               </div>
 
+              {/* Results */}
               {wsTestResult && (
-                <div className="test-result">{wsTestResult}</div>
+                <div style={{
+                  marginTop:12,padding:'10px 12px',
+                  background:'rgba(15,23,42,.7)',
+                  border:'1px solid var(--bd-mid)',
+                  borderRadius:7,
+                }}>
+                  <pre style={{
+                    fontFamily:'var(--mono)',fontSize:10.5,
+                    color:'var(--tx-secondary)',lineHeight:1.6,
+                    whiteSpace:'pre-wrap',wordBreak:'break-word',margin:0,
+                    maxHeight:220,overflowY:'auto',
+                  }}>{wsTestResult}</pre>
+                </div>
               )}
+
+              {/* Provider reference */}
+              <div className="settings-cmd-ref" style={{marginTop:14}}>
+                <div className="settings-cmd-title">Providers & Query Examples (click to try)</div>
+                {[
+                  ['weather in Tokyo',          'wttr.in — no key — worldwide weather'],
+                  ['current time in IST',        'WorldTimeAPI — no key — any timezone'],
+                  ['USD to INR exchange rate',   'ExchangeRate-API — no key — 150+ currencies'],
+                  ['who is Ada Lovelace',        'Wikipedia REST — no key — factual lookups'],
+                  ['latest Python news',         'DuckDuckGo — pip install duckduckgo-search'],
+                  ['today date',                 'WorldTimeAPI — current date and day'],
+                ].map(([ex, desc]) => (
+                  <div key={ex} className="settings-cmd-row"
+                    style={{cursor:'pointer'}}
+                    onClick={() => setWsTestQuery(ex)}>
+                    <code style={{color:'#a5b4fc',minWidth:200}}>{ex}</code>
+                    <span>{desc}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
           {/* ── Telegram Tab ────────────────────────────── */}
           {settingsTab === 'telegram' && (
             <div className="agent-form">
-              <div className="settings-section-desc" style={{fontSize:11,color:'var(--tx-muted)',lineHeight:1.6,marginBottom:4}}>
-                Connect a Telegram bot to receive job notifications and send queries from your phone.
-                Create a bot via <strong>@BotFather</strong> and paste the token below.
+              <div className="settings-section-desc">
+                Connect to a Telegram bot to run jobs, check status, and receive
+                reports — all from your phone.
+              </div>
+
+              <div className="settings-setup-steps">
+                <div className="settings-step">
+                  <span className="settings-step-num">1</span>
+                  <span>Open Telegram → search <strong>@BotFather</strong> → send <code>/newbot</code></span>
+                </div>
+                <div className="settings-step">
+                  <span className="settings-step-num">2</span>
+                  <span>Copy the <strong>Bot Token</strong> and paste below</span>
+                </div>
+                <div className="settings-step">
+                  <span className="settings-step-num">3</span>
+                  <span>Message <strong>@userinfobot</strong> to get your Chat ID</span>
+                </div>
+                <div className="settings-step">
+                  <span className="settings-step-num">4</span>
+                  <span>Run: <code>pip install "python-telegram-bot==20.7"</code></span>
+                </div>
               </div>
 
               <div className="form-group">
-                <label>Bot Token {tgBotSet && <span style={{color:'var(--success)',fontSize:10}}>● set</span>}</label>
+                <label>Bot Token {tgBotSet && <span className="tg-token-set">✓ token saved</span>}</label>
                 <input type="password" value={tgConfig.bot_token}
-                  placeholder={tgBotSet ? '••••••••••• (leave blank to keep current)' : 'paste token from @BotFather'}
-                  onChange={e => setTgConfig(c=>({...c,bot_token:e.target.value}))} />
+                  onChange={e => setTgConfig(c=>({...c, bot_token:e.target.value}))}
+                  placeholder={tgBotSet ? '••••••••••••• (leave blank to keep existing)' : '1234567890:AAF…'}/>
               </div>
-
               <div className="form-group">
-                <label>Allowed Chat IDs <span style={{color:'var(--tx-hint)',fontWeight:400}}>(comma-separated)</span></label>
-                <input value={tgConfig.allowed_chat_ids} placeholder="123456789, 987654321"
-                  onChange={e => setTgConfig(c=>({...c,allowed_chat_ids:e.target.value}))} />
+                <label>Allowed Chat IDs <span style={{fontWeight:400,color:'var(--tx-muted)'}}>— comma-separated, leave blank to allow all</span></label>
+                <input value={tgConfig.allowed_chat_ids}
+                  onChange={e => setTgConfig(c=>({...c, allowed_chat_ids:e.target.value}))}
+                  placeholder="123456789, 987654321"/>
               </div>
-
               <div className="form-group">
-                <label>Notify Chat ID <span style={{color:'var(--tx-hint)',fontWeight:400}}>(receives job completion messages)</span></label>
-                <input value={tgConfig.notify_chat_id} placeholder="123456789"
-                  onChange={e => setTgConfig(c=>({...c,notify_chat_id:e.target.value}))} />
+                <label>Notify Chat ID <span style={{fontWeight:400,color:'var(--tx-muted)'}}>— where job results are pushed automatically</span></label>
+                <input value={tgConfig.notify_chat_id}
+                  onChange={e => setTgConfig(c=>({...c, notify_chat_id:e.target.value}))}
+                  placeholder="123456789"/>
               </div>
-
-              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 12px',
-                background:'rgba(99,102,241,.06)',border:'1px solid rgba(99,102,241,.2)',borderRadius:8,marginBottom:4}}>
-                <span style={{fontSize:13,fontWeight:600}}>Enable Bot</span>
-                <label className="toggle-switch">
-                  <input type="checkbox" checked={tgConfig.enabled}
-                    onChange={e => setTgConfig(c=>({...c,enabled:e.target.checked}))} />
-                  <span className="toggle-track"/>
+              <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
+                <label className="settings-toggle-label">
+                  <input type="checkbox" checked={!!tgConfig.enabled}
+                    onChange={e => setTgConfig(c=>({...c, enabled:e.target.checked}))}
+                    style={{marginRight:6}}/>
+                  Enable Telegram bot
                 </label>
               </div>
-
+              {tgTestResult && (
+                <div className={`tg-test-result ${tgTestResult.startsWith('✅')?'ok':'err'}`}>
+                  {tgTestResult}
+                </div>
+              )}
               <div style={{display:'flex',gap:8}}>
                 <button className="run-btn" style={{flex:1}} onClick={handleSaveTelegram} disabled={tgSaving}>
-                  {tgSaving ? '⟳ Saving…' : '💾 Save'}
+                  {tgSaving?'⟳ Saving…':'💾 Save & Apply'}
                 </button>
-                <button className="run-btn" style={{flex:1,background:'rgba(30,41,59,.8)'}} onClick={handleTestTelegram} disabled={tgTesting||!tgBotSet}>
-                  {tgTesting ? '⟳ Sending…' : '📨 Test Message'}
+                <button className="run-btn" style={{flex:'0 0 100px', background:'rgba(16,185,129,.15)', border:'1px solid rgba(16,185,129,.35)', color:'#6ee7b7'}}
+                  onClick={handleTestTelegram} disabled={tgTesting || !tgBotSet}>
+                  {tgTesting?'⟳':'📱 Test'}
                 </button>
               </div>
 
-              {tgTestResult && <div className="test-result">{tgTestResult}</div>}
+              <div className="settings-cmd-ref">
+                <div className="settings-cmd-title">Available Bot Commands</div>
+                {[
+                  ['/run <topic>',      'Start a full research pipeline'],
+                  ['/query <question>', 'Quick query or maths expression'],
+                  ['/file <name> <q>',  'Analyse an uploaded file'],
+                  ['/status',           'Check current job status'],
+                  ['/agents',           'List all active agents'],
+                  ['/tools',            'List all active tools'],
+                  ['/model [name]',     'Show or switch active model'],
+                  ['/report',           'Resend last report as file'],
+                  ['/help',             'Show all commands'],
+                ].map(([cmd, desc]) => (
+                  <div key={cmd} className="settings-cmd-row">
+                    <code>{cmd}</code>
+                    <span>{desc}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
           {/* ── Self-Improver Tab ────────────────────────── */}
           {settingsTab === 'improver' && (
             <div className="agent-form">
-              <div className="settings-section-desc" style={{fontSize:11,color:'var(--tx-muted)',lineHeight:1.6,marginBottom:4}}>
-                The self-improver analyses completed jobs and proposes improvements to agent prompts,
-                tool configs, and best practices. Safe changes are applied automatically; risky ones
-                require your approval.
+              <div className="settings-section-desc">
+                Runs on a schedule — reads all agent SKILLS.md and tool definitions,
+                reviews recent job activity, and uses the LLM to update
+                <code>BEST_PRACTICES.md</code> and optionally auto-improve agent/tool descriptions.
               </div>
 
-              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 12px',
-                background:'rgba(99,102,241,.06)',border:'1px solid rgba(99,102,241,.2)',borderRadius:8}}>
-                <span style={{fontSize:13,fontWeight:600}}>Enable Self-Improver</span>
-                <label className="toggle-switch">
-                  <input type="checkbox" checked={siConfig.enabled}
-                    onChange={e => setSiConfig(c=>({...c,enabled:e.target.checked}))} />
-                  <span className="toggle-track"/>
+              <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14}}>
+                <label className="settings-toggle-label">
+                  <input type="checkbox" checked={!!siConfig.enabled}
+                    onChange={e => setSiConfig(c=>({...c,enabled:e.target.checked}))}
+                    style={{marginRight:6}}/>
+                  Enable self-improvement scheduler
                 </label>
               </div>
 
-              <div className="form-row">
-                <div className="form-group">
-                  <label>Run interval (hours)</label>
-                  <input type="number" min={1} max={168} value={siConfig.interval_hours}
-                    onChange={e => setSiConfig(c=>({...c,interval_hours:+e.target.value}))} />
-                </div>
-                <div className="form-group">
-                  <label>Min confidence</label>
-                  <input type="number" min={0} max={1} step={0.05} value={siConfig.min_confidence}
-                    onChange={e => setSiConfig(c=>({...c,min_confidence:+e.target.value}))} />
-                </div>
+              <div className="form-group">
+                <label>Run every (hours)</label>
+                <input type="number" min="1" max="168" value={siConfig.interval_hours}
+                  onChange={e => setSiConfig(c=>({...c,interval_hours:parseInt(e.target.value)||6}))}
+                  style={{width:80}}/>
               </div>
-
-              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',padding:'8px 12px',
-                background:'rgba(99,102,241,.06)',border:'1px solid rgba(99,102,241,.2)',borderRadius:8}}>
-                <span style={{fontSize:13,fontWeight:600}}>Auto-apply safe changes</span>
-                <label className="toggle-switch">
-                  <input type="checkbox" checked={siConfig.auto_apply_safe}
-                    onChange={e => setSiConfig(c=>({...c,auto_apply_safe:e.target.checked}))} />
-                  <span className="toggle-track"/>
-                </label>
+              <div className="form-group">
+                <label>Min confidence to auto-apply (0–1)</label>
+                <input type="number" min="0" max="1" step="0.05" value={siConfig.min_confidence}
+                  onChange={e => setSiConfig(c=>({...c,min_confidence:parseFloat(e.target.value)||0.7}))}
+                  style={{width:80}}/>
+              </div>
+              <div className="form-group">
+                <label>Model override <span style={{fontWeight:400,color:'var(--tx-muted)'}}>— blank = use active model</span></label>
+                <input value={siConfig.model_override||''}
+                  onChange={e => setSiConfig(c=>({...c,model_override:e.target.value}))}
+                  placeholder="e.g. llama3.2:3b"/>
+              </div>
+              <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:14}}>
+                {[
+                  ['auto_apply_safe',   'Auto-apply safe changes (description/goal updates)'],
+                  ['notify_telegram',   'Send Telegram notification after each cycle'],
+                ].map(([key, label]) => (
+                  <label key={key} className="settings-toggle-label">
+                    <input type="checkbox" checked={!!siConfig[key]}
+                      onChange={e => setSiConfig(c=>({...c,[key]:e.target.checked}))}
+                      style={{marginRight:6}}/>
+                    {label}
+                  </label>
+                ))}
               </div>
 
               <div style={{display:'flex',gap:8}}>
                 <button className="run-btn" style={{flex:1}} onClick={handleSaveSiConfig} disabled={siSaving}>
-                  {siSaving ? '⟳ Saving…' : '💾 Save Config'}
+                  {siSaving?'⟳ Saving…':'💾 Save Config'}
                 </button>
-                <button className="run-btn" style={{flex:1,background:'rgba(30,41,59,.8)'}} onClick={handleRunImprover} disabled={siRunning}>
-                  {siRunning ? '⟳ Running…' : '▶ Run Now'}
+                <button className="run-btn" style={{flex:'0 0 120px', background:'rgba(99,102,241,.15)', border:'1px solid rgba(99,102,241,.35)', color:'#a5b4fc'}}
+                  onClick={handleRunImprover} disabled={siRunning}>
+                  {siRunning?'⟳ Running…':'🔄 Run Now'}
                 </button>
+              </div>
+
+              <div className="settings-cmd-ref" style={{marginTop:14}}>
+                <div className="settings-cmd-title">Output Files (backend/)</div>
+                {[
+                  ['BEST_PRACTICES.md',      'Auto-updated best practices for this system'],
+                  ['IMPROVEMENT_PROPOSALS.md','Structural suggestions needing human review'],
+                  ['IMPROVEMENT_LOG.md',      'Log of every cycle and change applied'],
+                  ['activity_log.jsonl',      'Rolling log of all job activity'],
+                ].map(([f, d]) => (
+                  <div key={f} className="settings-cmd-row">
+                    <code>{f}</code><span>{d}</span>
+                  </div>
+                ))}
               </div>
             </div>
           )}
 
-          {/* ── Best Practices Tab ──────────────────────── */}
+          {/* ── Best Practices Tab ───────────────────────── */}
           {settingsTab === 'practices' && (
+            <div style={{display:'flex',flexDirection:'column',gap:10,padding:'0 2px'}}>
+              <div className="settings-section-desc">
+                Auto-maintained by the self-improver. View improvement proposals and the change log below.
+              </div>
+
+              <div className="form-group">
+                <label style={{display:'flex',justifyContent:'space-between'}}>
+                  <span>📋 BEST_PRACTICES.md</span>
+                  <button className="feed-clear-btn" onClick={fetchBestPractices}>↻ Refresh</button>
+                </label>
+                <textarea rows={10} readOnly value={bestPractices || '(Not yet generated — run the self-improver first)'}
+                  style={{fontFamily:'var(--mono)',fontSize:10.5,lineHeight:1.55,resize:'vertical',
+                    background:'rgba(15,23,42,.6)',border:'1px solid var(--bd-subtle)',
+                    borderRadius:6,padding:10,color:'var(--tx-secondary)',width:'100%'}}/>
+              </div>
+
+              {proposals && (
+                <div className="form-group">
+                  <label>📄 IMPROVEMENT_PROPOSALS.md</label>
+                  <textarea rows={6} readOnly value={proposals}
+                    style={{fontFamily:'var(--mono)',fontSize:10,lineHeight:1.5,resize:'vertical',
+                      background:'rgba(15,23,42,.6)',border:'1px solid var(--bd-subtle)',
+                      borderRadius:6,padding:10,color:'var(--tx-secondary)',width:'100%'}}/>
+                </div>
+              )}
+
+              {improvLog && (
+                <div className="form-group">
+                  <label>🗒️ IMPROVEMENT_LOG.md <span style={{fontWeight:400,color:'var(--tx-muted)'}}>— last 20 cycles</span></label>
+                  <textarea rows={5} readOnly
+                    value={improvLog.split('\n').slice(-40).join('\n')}
+                    style={{fontFamily:'var(--mono)',fontSize:10,lineHeight:1.5,resize:'vertical',
+                      background:'rgba(15,23,42,.6)',border:'1px solid var(--bd-subtle)',
+                      borderRadius:6,padding:10,color:'var(--tx-secondary)',width:'100%'}}/>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+
+      {/* ── Knowledge Base Panel ──────────────────────────── */}
+      {showKbPanel && (
+        <div className="overlay-panel kb-panel">
+          <div className="overlay-header">
+            <span>📚 Knowledge Base · {kbEntries.count} chunks · {kbEntries.sources?.length || 0} sources</span>
+            <button className="overlay-close" onClick={() => setShowKbPanel(false)}>✕</button>
+          </div>
+
+          {/* Tabs */}
+          <div className="agent-tabs">
+            {[['browse','🗂 Browse'],['add','➕ Add Documents'],['search','🔍 Test Search'],['config','⚙️ Config']].map(([id,label]) => (
+              <button key={id} className={`agent-tab ${kbTab===id?'active':''}`}
+                onClick={() => setKbTab(id)}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* ── Browse Tab ────────────────────────── */}
+          {kbTab === 'browse' && (
+            <div style={{flex:1,overflowY:'auto',padding:'4px 2px'}}>
+              {(!kbEntries.sources || kbEntries.sources.length === 0) ? (
+                <div className="feed-empty" style={{marginTop:24}}>
+                  No documents in the knowledge base yet.<br/>
+                  Add documents via the ➕ Add Documents tab.
+                </div>
+              ) : (
+                <>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+                    <div style={{fontSize:11,color:'var(--tx-muted)'}}>
+                      {kbEntries.sources.length} source{kbEntries.sources.length!==1?'s':''} · {kbEntries.count} total chunks
+                    </div>
+                    <button onClick={handleClearKb}
+                      style={{fontSize:10,padding:'3px 10px',background:'rgba(248,113,113,.12)',
+                        border:'1px solid rgba(248,113,113,.3)',color:'#fca5a5',
+                        borderRadius:5,cursor:'pointer'}}>
+                      🗑 Clear All
+                    </button>
+                  </div>
+                  {kbEntries.sources.map(s => (
+                    <div key={s.source} className="kb-source-card">
+                      <div className="kb-source-icon">📄</div>
+                      <div className="kb-source-info">
+                        <div className="kb-source-name">{s.source}</div>
+                        <div className="kb-source-meta">
+                          {s.chunks} chunk{s.chunks!==1?'s':''}
+                          {s.tags?.length > 0 && (
+                            <span style={{marginLeft:8}}>
+                              {s.tags.map(t=><span key={t} className="tool-tag" style={{marginRight:3}}>{t}</span>)}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <button onClick={() => handleDeleteKbSource(s.source)}
+                        style={{fontSize:11,padding:'3px 8px',background:'rgba(248,113,113,.1)',
+                          border:'1px solid rgba(248,113,113,.25)',color:'#fca5a5',
+                          borderRadius:5,cursor:'pointer',flexShrink:0}}>
+                        Remove
+                      </button>
+                    </div>
+                  ))}
+                </>
+              )}
+            </div>
+          )}
+
+          {/* ── Add Documents Tab ─────────────────── */}
+          {kbTab === 'add' && (
+            <div className="agent-form" style={{gap:16}}>
+              {/* Upload files */}
+              <div>
+                <div className="settings-cmd-title" style={{marginBottom:8}}>Upload Files</div>
+                <div className="kb-upload-zone" onClick={() => kbFileRef.current?.click()}>
+                  <span style={{fontSize:24}}>📂</span>
+                  <span style={{fontSize:13,color:'var(--tx-secondary)'}}>
+                    {kbUploading ? '⟳ Ingesting…' : 'Click to select files'}
+                  </span>
+                  <span style={{fontSize:11,color:'var(--tx-muted)'}}>
+                    PDF, DOCX, TXT, MD, CSV, JSON, HTML, LOG
+                  </span>
+                </div>
+                <input ref={kbFileRef} type="file" multiple style={{display:'none'}}
+                  accept=".pdf,.docx,.txt,.md,.csv,.json,.html,.log,.yaml,.yml"
+                  onChange={handleKbFileUpload} disabled={kbUploading}/>
+                <div className="form-group" style={{marginTop:8}}>
+                  <label>Tags for this upload (comma-separated, optional)</label>
+                  <input value={kbPasteTags} onChange={e => setKbPasteTags(e.target.value)}
+                    placeholder="e.g. policy, 2024, internal"/>
+                </div>
+              </div>
+
+              <div style={{borderTop:'1px solid var(--bd-subtle)',paddingTop:14}}>
+                <div className="settings-cmd-title" style={{marginBottom:8}}>Paste Text Directly</div>
+                <div className="form-group">
+                  <label>Source Name</label>
+                  <input value={kbPasteName} onChange={e => setKbPasteName(e.target.value)}
+                    placeholder="e.g. company-policy-2024"/>
+                </div>
+                <div className="form-group">
+                  <label>Text Content</label>
+                  <textarea rows={7} value={kbPasteText}
+                    onChange={e => setKbPasteText(e.target.value)}
+                    placeholder="Paste any text here — it will be chunked and indexed…"
+                    style={{fontFamily:'var(--mono)',fontSize:11,lineHeight:1.5,resize:'vertical'}}/>
+                </div>
+                <button className="run-btn" onClick={handleKbPasteIngest}
+                  disabled={kbUploading || !kbPasteText.trim() || !kbPasteName.trim()}>
+                  {kbUploading ? '⟳ Ingesting…' : '📥 Ingest Text'}
+                </button>
+              </div>
+
+              <div className="settings-cmd-ref">
+                <div className="settings-cmd-title">Supported Formats</div>
+                {[
+                  ['.txt / .md / .log', 'Plain text — full content indexed'],
+                  ['.pdf',              'Text layer extracted (not scanned images)'],
+                  ['.docx',            'Paragraph text extracted'],
+                  ['.csv',             'Rows indexed as text'],
+                  ['.json',            'Formatted and indexed'],
+                  ['.html',            'Tags stripped, text indexed'],
+                ].map(([f,d]) => (
+                  <div key={f} className="settings-cmd-row">
+                    <code>{f}</code><span>{d}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* ── Test Search Tab ───────────────────── */}
+          {kbTab === 'search' && (
             <div className="agent-form">
-              <div className="form-group">
-                <label>best_practices.md</label>
-                <textarea rows={10} style={{fontFamily:'var(--mono)',fontSize:11,lineHeight:1.55,resize:'vertical'}}
-                  value={bestPractices} readOnly />
+              <div className="settings-section-desc">
+                Test what the agents will find when they call <code>knowledge_base_search</code>.
               </div>
-              <div className="form-group">
-                <label>Improvement Proposals</label>
-                <textarea rows={8} style={{fontFamily:'var(--mono)',fontSize:11,lineHeight:1.55,resize:'vertical'}}
-                  value={proposals} readOnly />
+              <div style={{display:'flex',gap:8,marginBottom:12}}>
+                <input value={kbSearchQ} onChange={e => setKbSearchQ(e.target.value)}
+                  onKeyDown={e => e.key==='Enter' && handleKbSearch()}
+                  placeholder="Ask a question about your documents…"
+                  style={{flex:1}}/>
+                <button className="run-btn" style={{flex:'0 0 90px',padding:'8px 10px'}}
+                  onClick={handleKbSearch} disabled={kbSearching || !kbSearchQ.trim()}>
+                  {kbSearching ? '⟳' : '🔍 Search'}
+                </button>
               </div>
+              {kbSearchResult && (
+                <div style={{background:'rgba(15,23,42,.6)',border:'1px solid var(--bd-mid)',
+                  borderRadius:7,padding:'10px 12px',maxHeight:360,overflowY:'auto'}}>
+                  <pre style={{fontFamily:'var(--mono)',fontSize:10.5,color:'var(--tx-secondary)',
+                    lineHeight:1.6,whiteSpace:'pre-wrap',wordBreak:'break-word',margin:0}}>
+                    {kbSearchResult}
+                  </pre>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Config Tab ────────────────────────── */}
+          {kbTab === 'config' && (
+            <div className="agent-form">
+              <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:14,
+                padding:'10px 14px',background:'rgba(99,102,241,.06)',
+                border:'1px solid rgba(99,102,241,.2)',borderRadius:8}}>
+                <label className="settings-toggle-label" style={{flex:1,fontWeight:600,fontSize:13}}>
+                  <input type="checkbox" checked={!!kbConfig.enabled}
+                    onChange={e => setKbConfig(c=>({...c,enabled:e.target.checked}))}
+                    style={{marginRight:8,transform:'scale(1.2)'}}/>
+                  Enable Knowledge Base for agents
+                </label>
+                <span style={{fontSize:12,fontWeight:700,color:kbConfig.enabled?'#34d399':'#64748b'}}>
+                  {kbConfig.enabled ? '● ACTIVE' : '○ OFF'}
+                </span>
+              </div>
+
               <div className="form-group">
-                <label>Improvement Log</label>
-                <textarea rows={6} style={{fontFamily:'var(--mono)',fontSize:11,lineHeight:1.55,resize:'vertical'}}
-                  value={improvLog} readOnly />
+                <label>Embedding Model <span style={{fontWeight:400,color:'var(--tx-muted)'}}>
+                  — Ollama model for vector embeddings
+                </span></label>
+                <input value={kbConfig.embed_model}
+                  onChange={e => setKbConfig(c=>({...c,embed_model:e.target.value}))}
+                  placeholder="nomic-embed-text"/>
+                <div style={{fontSize:10,color:'var(--tx-muted)',marginTop:3}}>
+                  Pull first: <code>ollama pull nomic-embed-text</code> (274 MB, very fast)
+                </div>
+              </div>
+
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>
+                <div className="form-group">
+                  <label>Chunk size (chars)</label>
+                  <input type="number" min="100" max="2000" value={kbConfig.chunk_size}
+                    onChange={e => setKbConfig(c=>({...c,chunk_size:parseInt(e.target.value)||400}))}/>
+                </div>
+                <div className="form-group">
+                  <label>Chunk overlap (chars)</label>
+                  <input type="number" min="0" max="400" value={kbConfig.chunk_overlap}
+                    onChange={e => setKbConfig(c=>({...c,chunk_overlap:parseInt(e.target.value)||80}))}/>
+                </div>
+                <div className="form-group">
+                  <label>Top-K results</label>
+                  <input type="number" min="1" max="20" value={kbConfig.top_k}
+                    onChange={e => setKbConfig(c=>({...c,top_k:parseInt(e.target.value)||4}))}/>
+                </div>
+                <div className="form-group">
+                  <label>Min relevance score (0–1)</label>
+                  <input type="number" min="0" max="1" step="0.05" value={kbConfig.min_score}
+                    onChange={e => setKbConfig(c=>({...c,min_score:parseFloat(e.target.value)||0.25}))}/>
+                </div>
+              </div>
+
+              <label className="settings-toggle-label" style={{marginBottom:12}}>
+                <input type="checkbox" checked={!!kbConfig.use_ollama_embed}
+                  onChange={e => setKbConfig(c=>({...c,use_ollama_embed:e.target.checked}))}
+                  style={{marginRight:6}}/>
+                Use Ollama for embeddings (uncheck to use keyword fallback)
+              </label>
+
+              <button className="run-btn" onClick={handleSaveKbConfig} disabled={kbConfigSaving}>
+                {kbConfigSaving ? '⟳ Saving…' : '💾 Save Config'}
+              </button>
+
+              <div className="settings-cmd-ref" style={{marginTop:14}}>
+                <div className="settings-cmd-title">How RAG works in this system</div>
+                <div style={{fontSize:11,color:'var(--tx-secondary)',padding:'8px 12px',lineHeight:1.6}}>
+                  1. You upload documents → they are chunked and embedded into vectors<br/>
+                  2. When agents run a job, the Researcher and Analyst call
+                  <code> knowledge_base_search</code> automatically<br/>
+                  3. The top-K most relevant chunks are injected into their context<br/>
+                  4. Agents cite the source file in their output<br/>
+                  5. Use <strong>nomic-embed-text</strong> for semantic search or leave
+                  Ollama embed off for fast keyword matching
+                </div>
               </div>
             </div>
           )}
         </div>
       )}
+
+      {/* ── Model Picker ───────────────────────────────────── */}
+      {showModelPanel && (
+        <div className="model-panel">
+          <div className="model-panel-header">
+            <span>🤖 Select Model</span>
+            <button className="model-panel-close" onClick={() => setShowModelPanel(false)}>✕</button>
+          </div>
+          <div className="model-panel-body">
+            {[
+              { heading:'Recommended (M1 8 GB)', models:[
+                {id:'phi3:mini',size:'2.3 GB',quality:'Fast',desc:'Default — good for simple tasks'},
+                {id:'llama3.2:3b',size:'2.0 GB',quality:'Better',desc:'Better reasoning, same memory'},
+                {id:'gemma2:2b',size:'1.6 GB',quality:'Fast',desc:'Google Gemma, very fast'},
+                {id:'qwen2.5:3b',size:'1.9 GB',quality:'Better',desc:'Strong instruction following'},
+              ]},
+              { heading:'Larger (16 GB+)', models:[
+                {id:'llama3:8b',size:'4.7 GB',quality:'Best',desc:'Best quality — needs 16 GB'},
+                {id:'mistral:7b',size:'4.1 GB',quality:'Best',desc:'Excellent reasoning'},
+                {id:'qwen2.5:7b',size:'4.4 GB',quality:'Best',desc:'Qwen 7B, top follow'},
+                {id:'tinyllama:1.1b',size:'0.6 GB',quality:'Minimal',desc:'Emergency fallback'},
+              ]},
+            ].map(section => (
+              <div key={section.heading}>
+                <div className="model-section-label">{section.heading}</div>
+                <div className="model-grid">
+                  {section.models.map(m => (
+                    <div key={m.id}
+                      className={`model-card ${selectedModel===m.id?'selected':''} ${availableModels.includes(m.id)?'installed':''}`}
+                      onClick={() => setSelectedModel(m.id)}>
+                      <div className="model-card-top">
+                        <span className="model-card-name">{m.id}</span>
+                        <span className={`model-quality-badge quality-${m.quality.toLowerCase()}`}>{m.quality}</span>
+                      </div>
+                      <div className="model-card-desc">{m.desc}</div>
+                      <div className="model-card-meta">
+                        <span>{m.size}</span>
+                        {availableModels.includes(m.id)
+                          ? <span className="model-installed">✓ installed</span>
+                          : <span className="model-not-installed">not pulled</span>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <div className="model-section-label" style={{marginTop:12}}>Custom</div>
+            <input className="topic-input" value={selectedModel}
+              onChange={e => setSelectedModel(e.target.value)}
+              placeholder="e.g. llama3.1:8b…" style={{marginBottom:0}}/>
+            {!availableModels.includes(selectedModel) && selectedModel && (
+              <div className="model-pull-hint">
+                ⚠️ Not installed. Pull first:
+                <code>ollama pull {selectedModel}</code>
+              </div>
+            )}
+            {modelError && <div className="model-error">{modelError}</div>}
+          </div>
+          <div className="model-panel-footer">
+            <span style={{fontSize:11,color:'#64748b'}}>Active: <strong style={{color:'#a5b4fc'}}>{currentModel}</strong></span>
+            <button className="run-btn" style={{width:'auto',padding:'8px 20px'}}
+              onClick={handleModelChange} disabled={modelSaving||selectedModel===currentModel}>
+              {modelSaving?'⟳ Switching…':`Apply ${selectedModel}`}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── 3D Canvas ─────────────────────────────────────── */}
+      <div className="canvas-area">
+        <div className="canvas-label">Agent Office · Drag to orbit · Scroll to zoom</div>
+        {running && (
+          <div className="phase-bar">
+            {PHASE_ORDER.map((p,i) => {
+              const m = PHASE_META[p] || { icon:'🤖', name:p }
+              const active = currentPhase===p, done=currentPhaseIndex>i
+              return (
+                <div key={p} className={`phase-step${active?' active':''}${done?' done':''}`}>
+                  <span className="phase-icon">{m.icon}</span>
+                  <span className="phase-name">{m.name}</span>
+                  {i<3 && <span className="phase-arrow">→</span>}
+                </div>
+              )
+            })}
+          </div>
+        )}
+        <AgentScene3D activeAgent={activeAgent} agents={agents}
+          lastMessages={lastMessages} currentPhase={currentPhase}
+          currentWorker={currentWorker}/>
+      </div>
+
+      {/* ── Side Panel ────────────────────────────────────── */}
+      <aside className="side-panel">
+
+        {/* Mode selector */}
+        <div className="mode-section">
+          {MODES.map(m => (
+            <button key={m.id}
+              className={`mode-btn ${mode===m.id?'active':''}`}
+              onClick={() => setMode(m.id)} disabled={running}
+              title={m.desc}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Topic / query input */}
+        <div className="topic-section">
+          <div className="section-heading">{mode==='query'?'Your Question':mode==='file'?'Question about files':'Research Topic'}</div>
+          {mode==='file' && selectedFiles.length > 0 && (
+            <div className="file-context-badge">
+              📎 {selectedFiles.length} file{selectedFiles.length>1?'s':''} selected
+              <button onClick={() => setShowUploadPanel(true)} style={{marginLeft:6,background:'none',border:'none',color:'#6366f1',cursor:'pointer',fontSize:10}}>change</button>
+            </div>
+          )}
+          {mode==='file' && selectedFiles.length === 0 && (
+            <div className="file-context-badge warn">
+              ⚠️ No files selected —
+              <button onClick={() => setShowUploadPanel(true)} style={{marginLeft:4,background:'none',border:'none',color:'#f59e0b',cursor:'pointer',fontSize:10}}>upload files</button>
+            </div>
+          )}
+          <input className="topic-input" value={topic}
+            onChange={e => setTopic(e.target.value)}
+            placeholder={mode==='query'?'Ask anything… e.g. sqrt(144) or What is TCP/IP?':
+                         mode==='file'?'What do you want to know about the files?':
+                         'Enter a research topic…'}
+            disabled={running}/>
+          <button className="run-btn" onClick={handleRun}
+            disabled={running||!topic.trim()||(mode==='file'&&selectedFiles.length===0)}>
+            {running?'⟳ Working…':'▶  Launch Agents'}
+          </button>
+        </div>
+
+        {/* Agent cards */}
+        <div className="agents-section">
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:6}}>
+            <div className="section-heading">Agents</div>
+            <span style={{fontSize:10,color:'var(--tx-hint)'}}>
+              {agents.filter(a=>a.active!==false).length} active / {agents.length} total
+            </span>
+          </div>
+          <div className="agents-scroll">
+            {agents.map(a => (
+              <AgentCard key={a.id} agentId={a.id} agentMeta={a}
+                active={activeAgent===a.id} lastMessage={lastMessages[a.id]}
+                inactive={a.active===false}/>
+            ))}
+          </div>
+        </div>
+
+        {/* Activity feed */}
+        <div className="feed-section">
+          <div className="feed-header">
+            <div className="section-heading">Activity Feed</div>
+            {logs.length>0 && <button className="feed-clear-btn" onClick={()=>setLogs([])}>Clear</button>}
+          </div>
+          <ActivityFeed logs={logs} agents={agents}/>
+        </div>
+
+        {/* Result */}
+        {result && (
+          <div className="result-section">
+            <div className="result-header">
+              <div style={{display:'flex',alignItems:'center',gap:7}}>
+                <div className="section-heading">Result</div>
+                <span className={`format-badge format-${reportFormat}`}>
+                  {reportFormat.toUpperCase()}
+                </span>
+              </div>
+              {reportFile && (
+                <button className="download-btn" onClick={handleDownload}>⬇ Download</button>
+              )}
+            </div>
+            {reportFile && <div className="report-file-badge">📄 {reportFile}</div>}
+            {reportFormat === 'html'
+              ? <div className="result-html"
+                  dangerouslySetInnerHTML={{ __html: result }} />
+              : <div className="result-text">{result}</div>
+            }
+          </div>
+        )}
+      </aside>
     </div>
   )
 }
 
-/* ── Utility helpers ──────────────────────────────────────────────────────── */
-function fileIcon(name) {
-  const ext = name.split('.').pop().toLowerCase()
-  const map = { pdf:'📄', docx:'📝', doc:'📝', txt:'📃', csv:'📊', xlsx:'📊', xls:'📊', json:'🔧', md:'📋', log:'🗒️' }
-  return map[ext] || '📁'
-}
-
-function formatBytes(bytes) {
-  if (!bytes) return '0 B'
-  const k = 1024
-  const sizes = ['B','KB','MB','GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`
-}
-
+/* ── Sub-components ─────────────────────────────────────── */
 function StatCard({ label, value, sub, pct, color }) {
   return (
     <div className="stat-card">
-      <div className="stat-card-label">{label}</div>
-      <div className="stat-card-value" style={{color}}>{value}</div>
-      {sub && <div className="stat-card-sub">{sub}</div>}
+      <div className="stat-label">{label}</div>
+      <div className="stat-value" style={{color}}>{value}</div>
+      <div className="stat-sub">{sub}</div>
       {pct != null && (
-        <div className="stat-bar">
+        <div className="stat-bar-bg">
           <div className="stat-bar-fill" style={{width:`${Math.min(pct,100)}%`,background:color}}/>
         </div>
       )}
     </div>
   )
+}
+
+function fileIcon(name) {
+  const ext = name.split('.').pop()?.toLowerCase()
+  return {pdf:'📄',docx:'📝',txt:'📃',csv:'📊',xlsx:'📊',json:'📋',md:'📝',log:'📃',png:'🖼️',jpg:'🖼️'}[ext] || '📎'
+}
+function formatBytes(b) {
+  if (b < 1024) return `${b} B`
+  if (b < 1048576) return `${(b/1024).toFixed(1)} KB`
+  return `${(b/1048576).toFixed(1)} MB`
 }
