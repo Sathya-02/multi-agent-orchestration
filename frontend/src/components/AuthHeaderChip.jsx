@@ -17,15 +17,16 @@ export default function AuthHeaderChip() {
     )
   }
 
-  const initials = (user.name || user.email)
-    .split(/[\s@]/)[0]
-    .slice(0, 2)
-    .toUpperCase()
+  // Guard: both name and email may be null if backend omits them
+  const displayStr = user.name || user.email || ''
+  const initials = displayStr
+    ? displayStr.split(/[\s@]/)[0].slice(0, 2).toUpperCase()
+    : '?'
 
   return (
     <div className="auth-chip">
-      <div className="auth-chip-avatar" title={user.email}>{initials}</div>
-      <span className="auth-chip-email">{user.email}</span>
+      <div className="auth-chip-avatar" title={user.email || ''}>{initials}</div>
+      <span className="auth-chip-email">{user.email || user.name || 'User'}</span>
       {user.is_admin && <span className="auth-chip-admin">admin</span>}
       <button className="auth-logout-btn" onClick={logout}>Logout</button>
     </div>
