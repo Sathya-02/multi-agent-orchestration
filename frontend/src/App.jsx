@@ -681,6 +681,39 @@ export default function App() {
     return '#6366f1'
   }
 
+  /* ── Dashboard helpers ────────────────────────────────── */
+  const fmtGB  = (v) => (v == null || isNaN(v)) ? '—' : `${Number(v).toFixed(1)} GB`
+  const fmtMB  = (v) => (v == null || isNaN(v)) ? '—' : `${Math.round(v)} MB`
+  const fmtPct = (v) => (v == null || isNaN(v)) ? '—' : `${Number(v).toFixed(1)}%`
+  const fmtNum = (v) => (v == null || isNaN(v)) ? '0' : String(v)
+
+  const buildDashboardStats = () => {
+    if (!stats) return []
+    const cpu    = stats.cpu_pct    ?? stats.cpu_percent ?? null
+    const ramGB  = stats.ram_used_gb ?? null
+    const ramTot = stats.ram_total_gb ?? null
+    const ramFree= stats.ram_free_gb ?? null
+    const diskGB = stats.disk_used_gb ?? null
+    const diskTot= stats.disk_total_gb ?? null
+    const vramMB = stats.ollama?.vram_mb ?? stats.vram_mb ?? null
+    const model  = stats.ollama?.model ?? stats.active_model ?? currentModel
+    const tIn    = stats.tokens_in  ?? stats.total_tokens_in  ?? null
+    const tOut   = stats.tokens_out ?? stats.total_tokens_out ?? null
+    const actJobs= stats.active_jobs ?? stats.running_jobs ?? null
+    const totJobs= stats.total_jobs  ?? null
+
+    return [
+      { label:'RAM USED',     val: fmtGB(ramGB),   sub: ramTot  ? `of ${fmtGB(ramTot)}`   : '',        color:'var(--accent)',  barPct: ramTot  ? (ramGB/ramTot)*100  : null },
+      { label:'CPU',          val: fmtPct(cpu),     sub: 'utilisation',                                  color:'var(--teal)',    barPct: cpu },
+      { label:'DISK USED',    val: fmtGB(diskGB),   sub: diskTot ? `of ${fmtGB(diskTot)}`  : '',        color:'var(--warning)', barPct: diskTot ? (diskGB/diskTot)*100 : null },
+      { label:'MODEL VRAM',   val: fmtMB(vramMB),   sub: model,                                          color:'var(--purple)',  barPct: null },
+      { label:'TOKENS IN',    val: fmtNum(tIn),      sub: 'session total',                               color:'var(--sky)',     barPct: null },
+      { label:'TOKENS OUT',   val: fmtNum(tOut),     sub: `last job: ${stats.last_job_tokens_out ?? stats.last_tokens ?? '—'}`, color:'var(--accent2)', barPct: null },
+      { label:'ACTIVE JOBS',  val: actJobs != null ? String(actJobs) : '0', sub: totJobs != null ? `${totJobs} total` : 'session', color:'var(--success)', barPct: null },
+      { label:'RAM FREE',     val: fmtGB(ramFree),  sub: 'available',                                    color:'var(--teal)',    barPct: null },
+    ]
+  }
+
   const currentPhaseIndex = currentPhase ? PHASE_ORDER.indexOf(currentPhase) : -1
   const pendingSpawns     = spawnRequests.filter(r => !r._resolved)
   const pendingToolSpawns = toolSpawnReqs.filter(r => !r._resolved)
@@ -895,29 +928,38 @@ export default function App() {
       {showDashboard && (
         <div className="overlay-panel dashboard-panel">
           <div className="overlay-header">
-            <span>📊 Dashboard</span>
+            <span>📊 System Dashboard</span>
             <button className="overlay-close" onClick={() => setShowDashboard(false)}>✕</button>
           </div>
           <div className="overlay-body">
             {!stats ? (
               <p className="muted-text">Loading stats…</p>
             ) : (
-              <div className="dashboard-grid">
-                {[
-                  { label: 'Jobs Run', val: stats.total_jobs ?? 0, sub: 'all time', bar: null },
-                  { label: 'Active Model', val: currentModel, sub: '', bar: null },
-                  { label: 'Agents', val: agents.length, sub: `${BUILTIN.length} built-in`, bar: null },
-                  { label: 'Tools', val: tools.length, sub: `${tools.filter(t=>t.active!==false).length} active`, bar: null },
-                ].map(s => (
-                  <div key={s.label} className="stat-card">
-                    <div className="stat-label">{s.label}</div>
-                    <div className="stat-val">{s.val}</div>
-                    {s.sub && <div className="stat-sub">{s.sub}</div>}
-                  </div>
-                ))}
+              <>
+                <div className="dashboard-grid">
+                  {buildDashboardStats().map(s => (
+                    <div key={s.label} className="stat-card" style={{ '--color': s.color }}>
+                      <div className="stat-label">{s.label}</div>
+                      <div className="stat-val" style={{ color: s.color }}>{s.val}</div>
+                      {s.sub  && <div className="stat-sub">{s.sub}</div>}
+                      {s.barPct != null && (
+                        <div style={{ marginTop:'0.35rem', height:3, borderRadius:2, background:'rgba(255,255,255,0.06)', overflow:'hidden' }}>
+                          <div style={{ height:'100%', width:`${Math.min(100, s.barPct).toFixed(1)}%`, background: s.color, borderRadius:2, transition:'width 0.6s ease' }} />
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
 
+                {/* System info row */}
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'0.55rem 0.1rem 0', borderTop:'1px solid var(--border)', fontSize:'0.68rem', color:'var(--tx-muted)', marginTop:'0.3rem' }}>
+                  <span>Active Model: <span style={{ color:'var(--accent2)', fontWeight:700 }}>{stats.ollama?.model ?? stats.active_model ?? currentModel}</span></span>
+                  <span style={{ color:'var(--tx-hint)' }}>Refreshes every 3s</span>
+                </div>
+
+                {/* Model usage breakdown */}
                 {stats.model_usage && Object.keys(stats.model_usage).length > 0 && (
-                  <div className="stat-card wide">
+                  <div className="stat-card wide" style={{ marginTop:'0.5rem' }}>
                     <div className="stat-label">Model Usage</div>
                     {Object.entries(stats.model_usage).map(([m, c]) => (
                       <div key={m} className="dashboard-model-row">
@@ -927,7 +969,7 @@ export default function App() {
                     ))}
                   </div>
                 )}
-              </div>
+              </>
             )}
           </div>
         </div>
