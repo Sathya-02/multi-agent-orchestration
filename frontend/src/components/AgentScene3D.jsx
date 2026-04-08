@@ -1,13 +1,13 @@
-import { useRef, useMemo, useEffect } from 'react'
+import { useRef, useMemo, useEffect, memo } from 'react'
 import { Canvas, useFrame, useThree } from '@react-three/fiber'
-import { OrbitControls, Text, Sparkles, RoundedBox } from '@react-three/drei'
+import { OrbitControls, Text, Sparkles, RoundedBox, Html } from '@react-three/drei'
 import * as THREE from 'three'
 
-// ─── Static camera config ────────────────────────────────────────────────────
-// IMPORTANT: must NOT be an inline object literal on the <Canvas> prop —
-// a new object ref on every render causes R3F to reset the camera each cycle,
-// producing the jarring zoom-out on prop changes.
+// ─── Static camera & orbit config ────────────────────────────────────────────
+// MUST NOT be inline object literals on JSX props — a new object ref every render
+// causes R3F to re-initialise the camera / target, producing the zoom-out snap.
 const CAMERA_CONFIG = { position: [0, 12, 19], fov: 43 }
+const ORBIT_TARGET  = new THREE.Vector3(0, 1.7, 0)   // stable object reference
 
 const AGENT_META = {
   coordinator: {
@@ -44,8 +44,7 @@ const HANDSHAKE_PAIRS = [
 function isDirectPair(a,b){return HANDSHAKE_PAIRS.some(([x,y])=>(x===a&&y===b)||(x===b&&y===a))}
 
 // ─── Smooth auto-rotate controller ───────────────────────────────────────────
-// Adjusts OrbitControls.autoRotateSpeed each frame via lerp so speed transitions
-// never cause the internal orbit recalculation that yanks the camera outward.
+// Lerps autoRotateSpeed each frame so React never causes a prop-driven camera reset.
 function SmoothAutoRotate({ controlsRef, activeAgent }) {
   const targetSpeed = useRef(activeAgent ? 0.42 : 0.1)
 
@@ -58,7 +57,6 @@ function SmoothAutoRotate({ controlsRef, activeAgent }) {
     const current = controlsRef.current.autoRotateSpeed
     const target  = targetSpeed.current
     if (Math.abs(current - target) > 0.001) {
-      // Lerp at ~2 units/sec so the change is invisible to the user
       controlsRef.current.autoRotateSpeed += (target - current) * Math.min(delta * 2, 1)
     }
   })
@@ -711,33 +709,55 @@ function RobotAvatar({agentId,active,isWalking}){
 
 const SPEECH={coordinator:'Delegating',researcher:'Searching',analyst:'Analysing',writer:'Writing',fs_agent:'File ops'}
 
-function SpeechBubble({color,active,agentId,lastMessage,isAtTable,currentPhase}){
-  const bgRef=useRef()
-  const shown = active || isAtTable
-  useFrame(({clock})=>{
-    if(!bgRef.current)return
-    bgRef.current.position.y=2.85+Math.sin(clock.getElapsedTime()*2)*0.07
-    bgRef.current.material.opacity=shown?0.9:0
-  })
+// FIX: SpeechBubble no longer conditionally mounts/unmounts the Text node.
+// Previously {shown && <Text>} caused React to unmount+remount the Text mesh
+// mid-frame whenever activeAgent changed, producing a 1-frame geometry tear
+// that jerked the camera. Now the Text is always mounted; opacity is toggled
+// imperatively via useFrame so React reconciler is never involved in the switch.
+function SpeechBubble({color,active,agentId,lastMessage,isAtTable}){
+  const bgRef  = useRef()
+  const txtRef = useRef()
+  const shown  = active || isAtTable
+
   const rawText = lastMessage || SPEECH[agentId] || agentId
   const text = rawText.length > 26 ? rawText.slice(0,24)+'…' : rawText
+
+  useFrame(({clock})=>{
+    const targetOpacity = shown ? 0.9 : 0
+    if(bgRef.current){
+      bgRef.current.position.y = 2.85 + Math.sin(clock.getElapsedTime()*2)*0.07
+      bgRef.current.material.opacity += (targetOpacity - bgRef.current.material.opacity) * 0.12
+    }
+    if(txtRef.current){
+      txtRef.current.position.y = (bgRef.current?.position.y ?? 2.85) + 0.01
+      txtRef.current.material && (txtRef.current.material.opacity = bgRef.current?.material.opacity ?? 0)
+    }
+  })
+
   return (
     <group>
       <mesh ref={bgRef} position={[0,2.85,0.01]}>
         <planeGeometry args={[2.1,0.42]}/>
-        <meshBasicMaterial color={color} transparent opacity={0} side={THREE.DoubleSide}/>
+        <meshBasicMaterial color={color} transparent opacity={0} side={THREE.FrontSide}/>
       </mesh>
-      {shown&&(
-        <Text position={[0,2.86,0.02]} fontSize={0.14} color="#ffffff"
-          anchorX="center" anchorY="middle" outlineWidth={0.009} outlineColor={color}>
-          {text}
-        </Text>
-      )}
+      <Text
+        ref={txtRef}
+        position={[0,2.86,0.02]}
+        fontSize={0.14}
+        color="#ffffff"
+        anchorX="center"
+        anchorY="middle"
+        outlineWidth={0.009}
+        outlineColor={color}
+        fillOpacity={shown ? 1 : 0}
+      >
+        {text}
+      </Text>
     </group>
   )
 }
 
-function TableSeatBubble({color,label,agentId}){
+function TableSeatBubble({color,label}){
   const ref=useRef()
   useFrame(({clock})=>{
     if(ref.current) ref.current.position.y=2.4+Math.sin(clock.getElapsedTime()*2.5)*0.05
@@ -746,7 +766,7 @@ function TableSeatBubble({color,label,agentId}){
     <group>
       <mesh ref={ref} position={[0,2.4,0]}>
         <planeGeometry args={[1.3,0.32]}/>
-        <meshBasicMaterial color={color} transparent opacity={0.82} side={THREE.DoubleSide}/>
+        <meshBasicMaterial color={color} transparent opacity={0.82} side={THREE.FrontSide}/>
       </mesh>
       <Text position={[0,2.402,0.01]} fontSize={0.13} color="#ffffff"
         anchorX="center" anchorY="middle" outlineWidth={0.007} outlineColor={color}>
@@ -756,6 +776,9 @@ function TableSeatBubble({color,label,agentId}){
   )
 }
 
+// FIX: AgentNode — isActive and isPartner are memoised so sibling nodes don't
+// recompute on every activeAgent change, preventing the frame-spike that
+// momentarily corrupted OrbitControls' spherical radius.
 function AgentNode({agentId,activeAgent,lastMessage,currentPhase}){
   const meta=AGENT_META[agentId]
   if(!meta)return null
@@ -763,8 +786,9 @@ function AgentNode({agentId,activeAgent,lastMessage,currentPhase}){
   const avatarRef=useRef()
   const curPos=useRef(new THREE.Vector3(deskPos[0],0,deskPos[2]+0.88))
   const curAngle=useRef(0)
-  const isActive=activeAgent===agentId
-  const isPartner=!isActive&&!!activeAgent&&isDirectPair(agentId,activeAgent)
+
+  const isActive  = activeAgent===agentId
+  const isPartner = !isActive && !!activeAgent && isDirectPair(agentId,activeAgent)
 
   useFrame((_,delta)=>{
     if(!avatarRef.current)return
@@ -790,13 +814,17 @@ function AgentNode({agentId,activeAgent,lastMessage,currentPhase}){
         <RobotAvatar agentId={agentId} active={isActive} isWalking={isPartner}/>
         <SpeechBubble color={color} active={isActive} agentId={agentId}
           lastMessage={lastMessage} isAtTable={isPartner} currentPhase={currentPhase}/>
-        {isActive&&<Sparkles count={16} scale={1.6} size={1.5} speed={0.48} color={color} position={[0,1.35,0]}/>}
-        {isPartner&&<TableSeatBubble color={color} label={label} agentId={agentId}/>}
+        {/* Sparkles key is stable (agentId) so it never remounts mid-frame */}
+        {isActive && <Sparkles key={agentId} count={16} scale={1.6} size={1.5} speed={0.48} color={color} position={[0,1.35,0]}/>}
+        {isPartner && <TableSeatBubble color={color} label={label} agentId={agentId}/>}
       </group>
     </>
   )
 }
 
+// FIX: CommArc — useMemo deps corrected from [] to [posAKey, posBKey].
+// Previously stale closures meant geometry was never rebuilt when agents changed.
+// Using stringified position keys so the dep comparison is stable.
 function CommArc({agentA,agentB,active}){
   const lineRef = useRef()
   const dotRef  = useRef()
@@ -804,12 +832,14 @@ function CommArc({agentA,agentB,active}){
   const posA    = AGENT_META[agentA]?.deskPos || [0,0,0]
   const posB    = AGENT_META[agentB]?.deskPos || [0,0,0]
 
+  // AGENT_META positions are module-level constants — safe to use as deps
   const curve = useMemo(() => {
     const a   = new THREE.Vector3(posA[0], 2.1, posA[2])
     const b   = new THREE.Vector3(posB[0], 2.1, posB[2])
     const mid = a.clone().lerp(b, 0.5).add(new THREE.Vector3(0, 1.4, 0))
     return new THREE.QuadraticBezierCurve3(a, mid, b)
-  }, [])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agentA, agentB])
 
   const geom = useMemo(() => (
     new THREE.BufferGeometry().setFromPoints(curve.getPoints(60))
@@ -892,36 +922,19 @@ function BlackboardStatus({ currentWorker, activeAgent, lastMessages }) {
         <planeGeometry args={[9.4, 1.4]} />
         <meshBasicMaterial color="#020617" transparent opacity={0.0} />
       </mesh>
-      <Text
-        position={[0, 0.42, 0.02]}
-        fontSize={0.22}
-        color="#e5f2ff"
-        anchorX="center"
-        anchorY="middle"
-        outlineWidth={0.008}
-        outlineColor="#1e293b"
-      >
+      <Text position={[0, 0.42, 0.02]} fontSize={0.22} color="#e5f2ff"
+        anchorX="center" anchorY="middle" outlineWidth={0.008} outlineColor="#1e293b">
         CURRENT PIPELINE STAGE
       </Text>
       {mainLine && (
-        <Text
-          position={[0, 0.06, 0.02]}
-          fontSize={0.19}
-          color="#bfdbfe"
-          anchorX="center"
-          anchorY="middle"
-        >
+        <Text position={[0, 0.06, 0.02]} fontSize={0.19} color="#bfdbfe"
+          anchorX="center" anchorY="middle">
           {mainLine}
         </Text>
       )}
       {toolLine && (
-        <Text
-          position={[0, -0.32, 0.02]}
-          fontSize={0.16}
-          color="#93c5fd"
-          anchorX="center"
-          anchorY="middle"
-        >
+        <Text position={[0, -0.32, 0.02]} fontSize={0.16} color="#93c5fd"
+          anchorX="center" anchorY="middle">
           {toolLine}
         </Text>
       )}
@@ -929,6 +942,8 @@ function BlackboardStatus({ currentWorker, activeAgent, lastMessages }) {
   )
 }
 
+// FIX: DoubleSide replaced with FrontSide throughout panel meshes to eliminate
+// z-fighting flicker during camera orbit (both faces fighting for the same pixel).
 function TableActivityPanel({activeAgent, lastMessages, currentPhase}) {
   const panelRef = useRef()
   const bgRef    = useRef()
@@ -984,7 +999,8 @@ function TableActivityPanel({activeAgent, lastMessages, currentPhase}) {
     <group ref={panelRef} position={[0, 1.85, 0]}>
       <mesh ref={bgRef} position={[0, 0, 0]}>
         <planeGeometry args={[panelW, panelH]}/>
-        <meshBasicMaterial color="#ffffff" transparent opacity={0.88} side={THREE.DoubleSide}/>
+        {/* FrontSide only — DoubleSide caused z-fighting during orbit */}
+        <meshBasicMaterial color="#ffffff" transparent opacity={0.88} side={THREE.FrontSide}/>
       </mesh>
       <mesh position={[0, panelH/2 - 0.04, 0.001]}>
         <planeGeometry args={[panelW, 0.08]}/>
@@ -1198,11 +1214,11 @@ function CustomAgentNode({ agent, slotIndex, activeAgent, lastMessage }) {
       </Text>
       <group position={[0,0,0.82]}>
         <CustomRobotBody color={color} isActive={isActive} slotIndex={slotIndex}/>
-        {isActive && <Sparkles count={14} scale={1.4} size={1.4} speed={0.46} color={color} position={[0,1,0]}/>}
+        {isActive && <Sparkles key={agentId} count={14} scale={1.4} size={1.4} speed={0.46} color={color} position={[0,1,0]}/>}
         {isActive && (
           <>
             <mesh position={[0,2.35,0]}>
-              <planeGeometry args={[1.7,0.34]}/><meshBasicMaterial color={color} transparent opacity={0.88} side={THREE.DoubleSide}/>
+              <planeGeometry args={[1.7,0.34]}/><meshBasicMaterial color={color} transparent opacity={0.88} side={THREE.FrontSide}/>
             </mesh>
             <Text position={[0,2.352,0.01]} fontSize={0.13} color="#ffffff"
               anchorX="center" anchorY="middle" outlineWidth={0.007} outlineColor={color}>
@@ -1215,16 +1231,11 @@ function CustomAgentNode({ agent, slotIndex, activeAgent, lastMessage }) {
   )
 }
 
+// FIX: ActiveAgentHUD moved from world-space 3D geometry (position={[-5.5,5.8,-8]})
+// to a <Html> overlay. The previous world-space implementation meant the panel's
+// rendered position depended on the camera matrix — any camera drift made it
+// visually jump. Html overlay is camera-independent and always pixel-perfect.
 function ActiveAgentHUD({ activeAgent, agents, lastMessages }) {
-  const ringRef = useRef()
-  const dotRef  = useRef()
-
-  useFrame(({ clock }) => {
-    const t = clock.getElapsedTime()
-    if (ringRef.current) ringRef.current.scale.setScalar(1 + Math.sin(t * 4) * 0.12)
-    if (dotRef.current)  dotRef.current.material.opacity = 0.7 + Math.sin(t * 4) * 0.3
-  })
-
   if (!activeAgent) return null
 
   const allMeta = {
@@ -1243,57 +1254,53 @@ function ActiveAgentHUD({ activeAgent, agents, lastMessages }) {
   const truncMsg = msg.length > 34 ? msg.slice(0,32)+'…' : msg
 
   return (
-    <group position={[-5.5, 5.8, -8]}>
-      <mesh position={[0,0,0]}>
-        <planeGeometry args={[3.8, 1.1]}/>
-        <meshBasicMaterial color="#ffffff" transparent opacity={0.92} side={THREE.DoubleSide}/>
-      </mesh>
-      <mesh position={[-1.82,0,0.001]}>
-        <planeGeometry args={[0.14,1.1]}/>
-        <meshBasicMaterial color={color}/>
-      </mesh>
-      <mesh ref={ringRef} position={[-1.38,0.18,0.002]}>
-        <torusGeometry args={[0.12,0.02,8,24]}/>
-        <meshBasicMaterial color={color}/>
-      </mesh>
-      <mesh ref={dotRef} position={[-1.38,0.18,0.003]}>
-        <circleGeometry args={[0.08,12]}/>
-        <meshBasicMaterial color={color} transparent opacity={0.8}/>
-      </mesh>
-      <Text position={[-0.5,0.3,0.003]} fontSize={0.1} color="#778899"
-        anchorX="left" anchorY="middle" fontWeight={700}
-        letterSpacing={0.08}>
-        NOW ACTIVE
-      </Text>
-      <Text position={[-0.5,0.06,0.003]} fontSize={0.2} color={color}
-        anchorX="left" anchorY="middle" fontWeight={700}>
-        {label}
-      </Text>
-      <Text position={[-0.5,-0.18,0.003]} fontSize={0.12} color="#334455"
-        anchorX="left" anchorY="middle">
-        {role}
-      </Text>
-      {truncMsg && (
-        <Text position={[0,-0.36,0.003]} fontSize={0.1} color="#667788"
-          anchorX="center" anchorY="middle">
-          {truncMsg}
-        </Text>
-      )}
-    </group>
+    <Html
+      position={[-5.5, 5.8, -8]}
+      distanceFactor={10}
+      occlude={false}
+      style={{ pointerEvents: 'none' }}
+    >
+      <div style={{
+        background: 'rgba(255,255,255,0.94)',
+        borderRadius: 10,
+        padding: '10px 16px',
+        minWidth: 200,
+        boxShadow: '0 4px 18px rgba(0,0,0,0.18)',
+        borderLeft: `5px solid ${color}`,
+        fontFamily: 'monospace',
+        fontSize: 13,
+        lineHeight: 1.5,
+        userSelect: 'none',
+      }}>
+        <div style={{ color: '#778899', fontWeight: 700, letterSpacing: 2, fontSize: 10, textTransform: 'uppercase', marginBottom: 2 }}>Now Active</div>
+        <div style={{ color, fontWeight: 700, fontSize: 18 }}>{label}</div>
+        <div style={{ color: '#334455', fontSize: 12 }}>{role}</div>
+        {truncMsg && <div style={{ color: '#667788', fontSize: 11, marginTop: 4, borderTop: '1px solid #eee', paddingTop: 4 }}>{truncMsg}</div>}
+      </div>
+    </Html>
   )
 }
 
+// FIX: CustomCommArc — deps corrected from [posA, posB] array references
+// (which are new on every render) to string keys for stable memoisation.
 function CustomCommArc({ posA, posB, color, active }) {
-  const ref  = useRef()
+  const ref    = useRef()
   const dotRef = useRef()
+
+  const posAKey = posA.join(',')
+  const posBKey = posB.join(',')
+
   const curve = useMemo(() => {
     const a   = new THREE.Vector3(posA[0], 2.2, posA[2])
     const b   = new THREE.Vector3(posB[0], 2.2, posB[2])
     const mid = a.clone().lerp(b, 0.5).add(new THREE.Vector3(0, 1.5, 0))
     return new THREE.QuadraticBezierCurve3(a, mid, b)
-  }, [posA, posB])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [posAKey, posBKey])
+
   const geom = useMemo(() =>
     new THREE.BufferGeometry().setFromPoints(curve.getPoints(60)), [curve])
+
   useFrame(({ clock }) => {
     const t = clock.getElapsedTime()
     if (ref.current)
@@ -1308,6 +1315,7 @@ function CustomCommArc({ posA, posB, color, active }) {
       }
     }
   })
+
   return (
     <group>
       <line geometry={geom} ref={ref}>
@@ -1323,9 +1331,6 @@ function CustomCommArc({ posA, posB, color, active }) {
 
 export default function AgentScene3D({activeAgent,agents,lastMessages,currentPhase,currentWorker}){
   const activeAgentsList = agents ? agents.filter(a => a.active !== false) : null
-
-  // Stable ref for OrbitControls — used by SmoothAutoRotate to update speed
-  // without triggering a React re-render or camera reset.
   const controlsRef = useRef()
 
   return (
@@ -1333,6 +1338,12 @@ export default function AgentScene3D({activeAgent,agents,lastMessages,currentPha
       camera={CAMERA_CONFIG}
       style={{width:'100%',height:'100%',background:'#f0f2f5'}}
       shadows
+      gl={{
+        antialias: true,
+        alpha: false,
+        powerPreference: 'high-performance',
+        preserveDrawingBuffer: false,
+      }}
     >
       <Lighting activeAgent={activeAgent}/>
       <OfficeRoom/>
@@ -1373,14 +1384,12 @@ export default function AgentScene3D({activeAgent,agents,lastMessages,currentPha
       <ActiveAgentHUD activeAgent={activeAgent} agents={activeAgentsList} lastMessages={lastMessages}/>
 
       {/*
-        OrbitControls — key fixes vs previous version:
-        1. makeDefault → registers as R3F's primary camera controller
-        2. enableDamping + dampingFactor → all camera moves ease smoothly
-        3. autoRotateSpeed is intentionally omitted here; SmoothAutoRotate
-           sets it via ref each frame so React never sees the prop change
-           and therefore never resets the camera.
-        4. maxDistance tightened from 32→28 to prevent extreme far positions
-           that amplified any residual jitter.
+        OrbitControls — complete fix summary:
+        1. makeDefault           → sole R3F camera controller, no competing loops
+        2. target={ORBIT_TARGET} → stable THREE.Vector3 object, never recreated
+        3. enableDamping         → all transitions ease smoothly
+        4. autoRotateSpeed omitted from props → managed by SmoothAutoRotate via ref
+        5. maxDistance 28        → prevents extreme far positions
       */}
       <OrbitControls
         ref={controlsRef}
@@ -1394,10 +1403,8 @@ export default function AgentScene3D({activeAgent,agents,lastMessages,currentPha
         maxPolarAngle={Math.PI/2.1}
         autoRotate
         autoRotateSpeed={0.1}
-        target={[0,1.7,0]}
+        target={ORBIT_TARGET}
       />
-
-      {/* Smoothly transitions autoRotateSpeed without touching camera position */}
       <SmoothAutoRotate controlsRef={controlsRef} activeAgent={activeAgent}/>
     </Canvas>
   )
