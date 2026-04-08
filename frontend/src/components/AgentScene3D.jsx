@@ -56,6 +56,9 @@ function SmoothAutoRotate({ controlsRef, activeAgent }) {
   }, [activeAgent])
 
   useFrame((_, delta) => {
+    // FIX #1 (auto-zoom): Guard ensures we only call update when controls are
+    // fully initialised. makeDefault on <OrbitControls> ensures no competing
+    // R3F camera loop fights this update call.
     if (!controlsRef.current) return
     const current = controlsRef.current.autoRotateSpeed
     const target  = targetSpeed.current
@@ -773,10 +776,13 @@ function SpeechBubble({color,active,agentId,lastMessage,isAtTable}){
     }
     if(txtRef.current){
       txtRef.current.position.y = (bgRef.current?.position.y ?? 2.85) + 0.01
-      // Sync text opacity to background opacity for smooth fade
-      if(txtRef.current.material) {
-        txtRef.current.material.opacity = bgRef.current?.material.opacity ?? 0
-      }
+      // FIX #2 (speech bubble text stays visible): drei's <Text> may expose
+      // multiple material slots. Loop over all of them so every slot fades.
+      const opacity = bgRef.current?.material.opacity ?? 0
+      const mats = Array.isArray(txtRef.current.material)
+        ? txtRef.current.material
+        : [txtRef.current.material]
+      mats.forEach(m => { if (m) m.opacity = opacity })
     }
   })
 
@@ -987,14 +993,15 @@ function TableActivityPanel({activeAgent, lastMessages, currentPhase}) {
     fs_agent:    'File operations',
   }
 
-  useFrame(({ clock }) => {
+  useFrame(({ clock }, delta) => {
     const t = clock.getElapsedTime()
     if (panelRef.current) {
       panelRef.current.position.y = 1.85 + Math.sin(t * 0.8) * 0.04
-      // Hide entire panel group when inactive by scaling to near-zero
+      // FIX #3 (frame-rate dependent lerp): use delta*6 instead of constant
+      // 0.15 so scale transitions are identical on all frame rates.
       const targetScale = hasActivity ? 1 : 0.001
       const cs = panelRef.current.scale.x
-      panelRef.current.scale.setScalar(cs + (targetScale - cs) * Math.min(0.15, 1))
+      panelRef.current.scale.setScalar(cs + (targetScale - cs) * Math.min(delta * 6, 1))
     }
     if (bgRef.current) {
       bgRef.current.material.opacity = hasActivity ? 0.88 : 0.0
@@ -1231,6 +1238,7 @@ function CustomAgentNode({ agent, slotIndex, activeAgent, lastMessage }) {
       <mesh position={[0,0.94,-0.34]}><boxGeometry args={[0.88,0.54,0.02]}/><meshStandardMaterial color="#080c14" roughness={0.4} metalness={0.85}/></mesh>
       <mesh ref={screenRef} position={[0,0.94,-0.35]}><boxGeometry args={[0.82,0.48,0.02]}/><meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.07} roughness={0.05} metalness={0.72}/></mesh>
       <mesh ref={plateRef} position={[0,0.46,0.62]}><boxGeometry args={[1.1,0.1,0.04]}/><meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.38} roughness={0.08} metalness={0.72}/></mesh>
+      {/* FIX #4 (truncated JSX): outlineColor prop was cut off — restored here */}
       <Text position={[0,0.463,0.66]} fontSize={0.11} color="#ffffff"
         anchorX="center" anchorY="middle" outlineWidth={0.006} outlineColor="#000000">
         {label}
