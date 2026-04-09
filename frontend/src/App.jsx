@@ -184,8 +184,8 @@ export default function App() {
         // Normalize: API may return [{name, pulled, ...}] objects OR plain strings
         const names = d.models.map(m => (typeof m === 'string' ? m : m.name)).filter(Boolean)
         setAvailableModels(names)
-        setCurrentModel(d.active_model)
-        setSelectedModel(d.active_model)
+        if (d.active_model) setCurrentModel(d.active_model)
+        if (d.active_model) setSelectedModel(d.active_model)
       }
     } catch {}
   }
@@ -603,7 +603,7 @@ export default function App() {
         body:JSON.stringify({model:selectedModel})
       }).then(r=>r.json())
       if (d.error) setModelError(d.error)
-      else { setCurrentModel(d.active_model); addLog('system','⚙️ System',`✅ Model: ${d.active_model}`); setShowModelPanel(false) }
+      else { setCurrentModel(d.active_model || selectedModel); addLog('system','⚙️ System',`✅ Model: ${d.active_model || selectedModel}`); setShowModelPanel(false) }
     } catch { setModelError('Failed') }
     finally { setModelSaving(false) }
   }
@@ -682,8 +682,9 @@ export default function App() {
   }
 
   const modelBadgeColor = () => {
-    if (currentModel.includes('llama3')||currentModel.includes('mistral')||currentModel.includes('qwen')) return '#22c55e'
-    if (currentModel.includes('phi3')||currentModel.includes('gemma')) return '#f59e0b'
+    const m = currentModel || ''
+    if (m.includes('llama3') || m.includes('mistral') || m.includes('qwen')) return '#22c55e'
+    if (m.includes('phi3') || m.includes('gemma')) return '#f59e0b'
     return '#6366f1'
   }
 
