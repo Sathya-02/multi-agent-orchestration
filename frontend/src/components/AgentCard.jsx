@@ -1,71 +1,68 @@
-// Strip ANSI escape codes so raw terminal output never leaks into the UI
-// Covers: CSI sequences (including 256-colour & truecolor), OSC sequences,
-// other Fe escapes (\x1bO, \x1b=, \x1b> …), and bare carriage returns.
-const stripAnsi = (str) => {
-  if (typeof str !== 'string') return str
-  return str
-    .replace(/\x1b\[[\d;]*[A-Za-z]/g, '')       // CSI sequences (SGR, cursor, etc.)
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC sequences
-    .replace(/\x1b[O=><][\d;]*[A-Za-z]?/g, '')  // Fe / Fp / Fs escapes
-    .replace(/\x1b[^[\]O=><]/g, '')             // any remaining lone ESC + char
-    .replace(/\r/g, '')                           // bare carriage returns
-    .trim()
+import React from 'react';
+
+const BUILTIN_COLORS = {
+  coordinator: 'var(--coord)',
+  researcher:  'var(--res)',
+  analyst:     'var(--anal)',
+  writer:      'var(--writ)',
+};
+
+const BUILTIN_IDS = new Set(['coordinator', 'researcher', 'analyst', 'writer']);
+
+function resolveColor(agent) {
+  const id = (agent.id || agent.role || '').toLowerCase();
+  if (BUILTIN_COLORS[id]) return BUILTIN_COLORS[id];
+  return agent.color || 'var(--tx-muted)';
 }
 
-/**
- * Props (matches what App.jsx passes):
- *   agentId      – role id string
- *   label        – display name
- *   icon         – emoji icon
- *   color        – hex accent colour
- *   isActive     – bool, agent is currently working
- *   isDone       – bool, agent has finished its phase
- *   lastMessage  – last status string (may contain ANSI)
- */
-export default function AgentCard({ agentId, label, icon, color, isActive, isDone, lastMessage }) {
-  const accentColor = color || '#6366f1'
-  const displayLabel = label || (agentId ? agentId.toUpperCase() : 'Agent')
-  const displayIcon  = icon  || '🤖'
+export default function AgentCard({ agentId, agentMeta, active, lastMessage, inactive }) {
+  if (!agentMeta) return null;
 
-  const cleanMessage = stripAnsi(lastMessage || '')
-  // Increased truncation limit 42 → 80 chars for better readability
-  const statusText = isActive
-    ? '● thinking…'
-    : cleanMessage
-      ? cleanMessage.slice(0, 80) + (cleanMessage.length > 80 ? '…' : '')
-      : 'idle'
+  const { id, role, label, icon, color, builtin } = agentMeta;
+  const agentIdKey = (id || role || '').toLowerCase();
+  const isBuiltin = builtin || BUILTIN_IDS.has(agentIdKey);
+  const resolvedColor = resolveColor(agentMeta);
+  const displayLabel = label || role || id || '?';
+
+  const cardClass = [
+    'agent-card',
+    isBuiltin ? 'builtin' : 'custom',
+    active   ? 'active'  : '',
+    inactive ? 'inactive': '',
+  ].filter(Boolean).join(' ');
 
   return (
-    <div className={`agent-card ${isActive ? 'active' : ''} ${isDone ? 'done' : ''}`}>
-      <div
-        className="agent-avatar"
-        style={{
-          background: `${accentColor}22`,
-          border: `1px solid ${accentColor}55`,
-          // Expose accent colour as CSS custom property for the pulse ring in AgentCard.css
-          '--agent-pulse': `${accentColor}4d`,
-        }}
-      >
-        {displayIcon}
+    <div
+      className={cardClass}
+      style={{ '--agent-col': resolvedColor }}
+    >
+      <div className="agent-icon" aria-hidden="true">
+        {icon || (isBuiltin ? '🤖' : '🖥️')}
       </div>
 
       <div className="agent-info">
-        <div className="agent-role-label">{displayLabel}</div>
-        <div className={`agent-status ${isActive ? 'thinking' : ''}`}>
-          {statusText}
-        </div>
+        <div className="agent-label">{displayLabel.toUpperCase()}</div>
+        {role && role !== displayLabel && (
+          <div className="agent-role">{role}</div>
+        )}
+        {lastMessage && (
+          <div className="agent-last-msg" title={lastMessage}>
+            {lastMessage.length > 72 ? lastMessage.slice(0, 72) + '…' : lastMessage}
+          </div>
+        )}
       </div>
 
-      <div
-        className="agent-indicator"
-        style={{
-          background: isActive
-            ? accentColor
-            : isDone
-              ? 'var(--success)'
-              : '#334155',
-        }}
-      />
+      <div className="agent-badges">
+        {isBuiltin && !inactive && (
+          <span className="agent-builtin-badge">BUILT-IN</span>
+        )}
+        {!isBuiltin && !inactive && (
+          <span className="agent-custom-badge">CUSTOM</span>
+        )}
+        {inactive && (
+          <span className="agent-inactive-badge">INACTIVE</span>
+        )}
+      </div>
     </div>
-  )
+  );
 }

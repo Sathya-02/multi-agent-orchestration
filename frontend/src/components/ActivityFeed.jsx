@@ -1,142 +1,128 @@
-import { useEffect, useRef } from 'react'
+import React, { useEffect, useRef } from 'react';
 
-const BUILTIN_COLORS = {
-  coordinator: '#6C63FF',
-  researcher:  '#00BFA6',
-  analyst:     '#FF6584',
-  writer:      '#FFC107',
-  fs_agent:    '#38bdf8',
-  system:      '#64748b',
+/* Per-agent colour map — matches README colour narrative */
+const AGENT_COLORS = {
+  coordinator: 'var(--coord)',
+  researcher:  'var(--res)',
+  analyst:     'var(--anal)',
+  writer:      'var(--writ)',
+  system:      'var(--sys)',
+};
+
+function agentColor(agent, agents = []) {
+  if (!agent) return 'var(--sys)';
+  const id = agent.toLowerCase();
+  if (AGENT_COLORS[id]) return AGENT_COLORS[id];
+  const found = agents.find(a => a.id === agent || a.role?.toLowerCase() === id);
+  return found?.color ? found.color : 'var(--sys)';
 }
 
-const BUILTIN_LABELS = {
-  coordinator: '🎯 Coordinator',
-  researcher:  '🔍 Researcher',
-  analyst:     '📊 Analyst',
-  writer:      '✍️  Writer',
-  fs_agent:    '🗂️  File System',
-  system:      '⚙️  System',
+function agentLabel(agent, agents = []) {
+  if (!agent) return 'SYSTEM';
+  const id = agent.toLowerCase();
+  const labels = { coordinator: 'COORDINATOR', researcher: 'RESEARCHER', analyst: 'ANALYST', writer: 'WRITER' };
+  if (labels[id]) return labels[id];
+  const found = agents.find(a => a.id === agent || a.role?.toLowerCase() === id);
+  return (found?.label || found?.role || agent).toUpperCase();
 }
 
-// Comprehensive ANSI strip — covers CSI (including 256-colour & truecolor/RGB),
-// OSC sequences, other Fe/Fp/Fs escapes, and bare carriage returns.
-function stripAnsi(str) {
-  if (typeof str !== 'string') return str
-  return str
-    .replace(/\x1b\[[\d;]*[A-Za-z]/g, '')              // CSI sequences
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC sequences
-    .replace(/\x1b[O=><][\d;]*[A-Za-z]?/g, '')         // Fe / Fp / Fs escapes
-    .replace(/\x1b[^[\]O=><]/g, '')                    // remaining lone ESC + char
-    .replace(/\r/g, '')                                  // bare carriage returns
-    .trim()
+function formatTs(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-function cleanMessage(raw) {
-  return stripAnsi(raw || '')
-    .replace(/^\[[\d;]+m/g, '')                                // leftover bracket sequences
-    .replace(/^(Thought:|Action:|Action Input:|Observation:)\s*/i, '') // ReAct prefixes
-    .replace(/\*\*(.*?)\*\*/g, '$1')                          // markdown bold
-    .trim()
-}
-
-// Sanitise label strings — strips ANSI and trims whitespace.
-function cleanLabel(raw) {
-  return typeof raw === 'string' ? stripAnsi(raw).trim() : raw
-}
-
-function formatTime(ts) {
-  if (!ts) return ''
-  const d = new Date(ts * 1000)
-  return [d.getHours(), d.getMinutes(), d.getSeconds()]
-    .map(n => String(n).padStart(2, '0')).join(':')
-}
-
-export default function ActivityFeed({ logs, agents }) {
-  const bottomRef = useRef()
+export default function ActivityFeed({ logs = [], agents = [] }) {
+  const bottomRef = useRef(null);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [logs])
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [logs.length]);
 
-  // Build colour + label maps that include custom agents
-  const agentColorMap = { ...BUILTIN_COLORS }
-  const agentLabelMap = { ...BUILTIN_LABELS }
-  if (agents) {
-    agents.forEach(a => {
-      if (!agentColorMap[a.id]) agentColorMap[a.id] = a.color || '#a78bfa'
-      if (!agentLabelMap[a.id]) agentLabelMap[a.id] = `${a.icon || '🤖'} ${a.label || a.role}`
-    })
+  if (!logs.length) {
+    return (
+      <div className="feed-scroll">
+        <div className="feed-empty">
+          No activity yet — launch agents to begin.
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="feed-scroll">
-      {logs.length === 0 && (
-        <div className="feed-empty">Launch agents to see activity here…</div>
-      )}
+      {logs.map((entry, i) => {
+        const col = agentColor(entry.agent, agents);
+        const lbl = agentLabel(entry.agent, agents);
 
-      {logs.map((log, i) => {
-        const color   = agentColorMap[log.agent] || agentColorMap.system
-        // Sanitize label: prefer built-in map, fall back to (sanitised) log.label
-        const label   = agentLabelMap[log.agent] || cleanLabel(log.label) || log.agent
-        const message = cleanMessage(log.message)
-        const isPhase  = log.phase === true
-        const isResult = log.taskResult === true
-        const isError  = message.startsWith('❌')
-        const isDone   = message.startsWith('✅')
-
-        if (!message) return null
-
-        // ── Phase banner ────────────────────────────────────────────────
-        if (isPhase) {
+        /* 1. Phase banner */
+        if (entry.phase) {
           return (
-            <div key={i} className="feed-phase-banner"
-              style={{ borderLeftColor: color }}>
-              <div className="feed-phase-header">
-                <span className="feed-agent-label" style={{ color }}>{label}</span>
-                {log.ts && <span className="feed-time">{formatTime(log.ts)}</span>}
-              </div>
-              <div className="feed-phase-msg">{message}</div>
+            <div
+              key={i}
+              className="feed-phase"
+              style={{ '--agent-color': col }}
+            >
+              <span className="feed-phase-icon">
+                {entry.agent === 'coordinator' ? '🎯'
+                  : entry.agent === 'researcher' ? '🔍'
+                  : entry.agent === 'analyst'    ? '📊'
+                  : entry.agent === 'writer'     ? '✍️'
+                  : '🤖'}
+              </span>
+              <span className="feed-phase-label">{lbl}</span>
+              {entry.label && entry.label !== entry.agent && (
+                <span className="feed-phase-role">— {entry.label}</span>
+              )}
+              {entry.ts && (
+                <span style={{ marginLeft: 'auto', fontSize: '9.5px', color: 'var(--tx-hint)' }}>
+                  {formatTs(entry.ts)}
+                </span>
+              )}
             </div>
-          )
+          );
         }
 
-        // ── Task result block ────────────────────────────────────────────
-        if (isResult) {
-          // Strip "📋 Task result: " prefix for cleaner display
-          const body = message.replace(/^📋 Task result:\s*/i, '')
+        /* 2. RESULT block */
+        if (entry.taskResult) {
           return (
-            <div key={i} className="feed-item feed-item-result"
-              style={{ borderLeftColor: color }}>
-              <div className="feed-bar" style={{ background: color }} />
-              <div className="feed-content">
-                <div className="feed-row-top">
-                  <span className="feed-agent-label" style={{ color }}>{label}</span>
-                  <span className="feed-result-badge">RESULT</span>
-                  {log.ts && <span className="feed-time">{formatTime(log.ts)}</span>}
-                </div>
-                <div className="feed-result-body">{body}</div>
+            <div
+              key={i}
+              className="feed-result"
+              style={{ '--agent-color': col }}
+            >
+              <div className="feed-result-header">
+                <span className="feed-result-badge">RESULT</span>
+                <span className="feed-result-agent" style={{ color: col }}>
+                  {lbl}
+                </span>
+                {entry.ts && (
+                  <span style={{ marginLeft: 'auto', fontSize: '9.5px', color: 'var(--tx-hint)' }}>
+                    {formatTs(entry.ts)}
+                  </span>
+                )}
+              </div>
+              <div className="feed-result-body">
+                {entry.message}
               </div>
             </div>
-          )
+          );
         }
 
-        // ── Regular item ─────────────────────────────────────────────────
+        /* 3. Regular log line */
         return (
-          <div key={i}
-            className={`feed-item${isError?' feed-item-error':''}${isDone?' feed-item-done':''}`}>
-            <div className="feed-bar" style={{ background: color }} />
-            <div className="feed-content">
-              <div className="feed-row-top">
-                <span className="feed-agent-label" style={{ color }}>{label}</span>
-                {log.ts && <span className="feed-time">{formatTime(log.ts)}</span>}
-              </div>
-              <div className="feed-message">{message}</div>
-            </div>
+          <div key={i} className="feed-log" style={{ '--agent-color': col }}>
+            <div className="feed-log-bar" />
+            <span className="feed-log-text">
+              {entry.message}
+            </span>
+            {entry.ts && (
+              <span className="feed-log-ts">{formatTs(entry.ts)}</span>
+            )}
           </div>
-        )
+        );
       })}
-
       <div ref={bottomRef} />
     </div>
-  )
+  );
 }
