@@ -141,6 +141,7 @@ export default function App() {
   const wsRef       = useRef(null)
   const activeTimer = useRef(null)
   const statsTimer  = useRef(null)
+  const modelTimer = useRef(null)
 
   const [ragQuery,   setRagQuery]   = useState('')
   const [ragTopK,    setRagTopK]    = useState(4)
@@ -159,6 +160,14 @@ export default function App() {
     statsTimer.current = setInterval(poll, 3000)
     return () => clearInterval(statsTimer.current)
   }, [])
+
+  // Models polling — refresh installed status every 15s when panel is open
+  useEffect(() => {
+    if (!showModelPanel) return
+    fetchModels() // immediate refresh when panel opens
+    const id = setInterval(fetchModels, 15000)
+    return () => clearInterval(id)
+  }, [showModelPanel])
 
   /* ── WebSocket ────────────────────────────────────────── */
   useEffect(() => {
@@ -211,16 +220,15 @@ export default function App() {
     try {
       const d = await fetch(`${API_URL}/models`).then(r => r.json())
       const raw = d.models || d.installed || []
-      // Normalise — API may return objects, extract .name
-      const installed = raw.map(m => (typeof m === 'string' ? m : (m.name || m.id || String(m))))
-      const activeRaw = d.active_model || d.active
-      // Guard: API may return an object like {name:'phi3:mini'} — extract the string
-      const active = typeof activeRaw === 'string' ? activeRaw : (activeRaw?.name || activeRaw?.id || '')
-      if (installed.length > 0 || active) {
-        setAvailableModels(installed)
-        setCurrentModel(active || 'phi3:mini')
-        setSelectedModel(active || 'phi3:mini')
-      }
+      // ✅ Only include models where pulled === true (or plain strings = legacy format)
+      const installed = raw
+        .filter(m => typeof m === 'string' || m.pulled === true)
+        .map(m => typeof m === 'string' ? m : (m.name || m.id || String(m)))
+      const active = typeof d.active_model === 'string'
+        ? d.active_model
+        : (d.active_model?.name || d.active || '')
+      setAvailableModels(installed)          // always update (even empty = all unpulled)
+      if (active) setCurrentModel(active)    // don't reset selectedModel
     } catch {}
   }
   const fetchUploads = async () => {
@@ -660,7 +668,6 @@ export default function App() {
     }
     if (msg.type === 'model_changed') {
       const mRaw = msg.active_model || msg.model
-      // Normalise to string in case the server sends an object
       const m = typeof mRaw === 'string' ? mRaw : (mRaw?.name || mRaw?.id || '')
       if (m) { setCurrentModel(m); setSelectedModel(m) }
     }
@@ -709,13 +716,21 @@ export default function App() {
 
   /* ── Model actions ────────────────────────────────────── */
   const handleModelChange = async () => {
-    if (selectedModel === currentModel) return
+    const currentStr = typeof currentModel === 'string' ? currentModel : ''
+    if (selectedModel === currentStr) return
     setModelSaving(true); setModelError(null)
     try {
-      const d = await fetch(`${API_URL}/model`, { method:'POST',
-        headers:{'Content-Type':'application/json'}, body:JSON.stringify({model:selectedModel}) }).then(r=>r.json())
+      const d = await fetch(`${API_URL}/models/select`, { method:'POST',
+  headers:{'Content-Type':'application/json'}, body:JSON.stringify({model:selectedModel}) }).then(r=>r.json())
       if (d.error) setModelError(d.error)
-      else { const m = d.active_model || d.model; setCurrentModel(m); addLog('system','⚙️ System',`✅ Model switched to: ${m}`); setShowModelPanel(false) }
+      else {
+        const mRaw = d.active_model || d.model
+        const m = typeof mRaw === 'string' ? mRaw : (mRaw?.name || mRaw?.id || selectedModel)
+        setCurrentModel(m)
+        setSelectedModel(m)  // ← keep selected in sync so disabled check works correctly
+        addLog('system', '⚙️ System', `✅ Model switched to: ${m}`)
+        setShowModelPanel(false)
+      }
     } catch { setModelError('Failed') } finally { setModelSaving(false) }
   }
 
@@ -2300,7 +2315,7 @@ const handleOpenSkills = async (agent) => {
                 <div className="model-grid">
                   {section.models.map(m => (
                     <div key={m.id}
-                      className={`model-card ${selectedModel===m.id?'selected':''} ${availableModels.includes(m.id)?'installed':''}`}
+                      className={`model-card ${selectedModel === m.id ? 'selected' : ''} ${availableModels.includes(m.id) ? 'installed' : ''}`}
                       onClick={() => setSelectedModel(m.id)}>
                       <div className="model-card-top">
                         <span className="model-card-name">{m.id}</span>
@@ -2322,7 +2337,7 @@ const handleOpenSkills = async (agent) => {
             <input className="topic-input" value={selectedModel}
               onChange={e => setSelectedModel(e.target.value)}
               placeholder="e.g. llama3.1:8b…" style={{marginBottom:0}}/>
-            {!availableModels.includes(selectedModel) && selectedModel && (
+           {!availableModels.includes(selectedModel) && selectedModel && (
               <div className="model-pull-hint">
                 ⚠️ Not installed. Pull first:
                 <code>ollama pull {selectedModel}</code>
@@ -2333,7 +2348,7 @@ const handleOpenSkills = async (agent) => {
           <div className="model-panel-footer">
             <span style={{fontSize:11,color:'#64748b'}}>Active: <strong style={{color:'#a5b4fc'}}>{currentModel}</strong></span>
             <button className="run-btn" style={{width:'auto',padding:'8px 20px'}}
-              onClick={handleModelChange} disabled={modelSaving||selectedModel===currentModel}>
+              onClick={handleModelChange} disabled={modelSaving || selectedModel === (typeof currentModel === 'string' ? currentModel : '')}>
               {modelSaving?'⟳ Switching…':`Apply ${selectedModel}`}
             </button>
           </div>
