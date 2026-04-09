@@ -1,1 +1,5 @@
-/home/user/output/App.jsx
+import { useState, useEffect, useRef, useCallback } from 'react'
+import AgentScene3D from './components/AgentScene3D'
+import ActivityFeed from './components/ActivityFeed'
+import AgentCard    from './components/AgentCard'
+import './styles/App.css'
