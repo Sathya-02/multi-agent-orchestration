@@ -242,7 +242,7 @@ export default function App() {
   const fetchFsConfig = async () => {
     try {
       const d = await fetch(`${API_URL}/fs-config`).then(r=>r.json())
-      setFsConfig({ access_list: [], output_dir: null, ...d })
+      setFsConfig({ output_dir: null, ...d, access_list: Array.isArray(d.access_list) ? d.access_list : [] })
       setOutputDirInput(d.output_dir || '')
     } catch {}
   }
@@ -678,7 +678,7 @@ export default function App() {
     if (msg.type === 'fs_config_updated') {
       // Server pushed the full updated config — apply immediately without a round-trip
       if (msg.config) {
-        setFsConfig({ access_list: [], output_dir: null, ...msg.config })
+        setFsConfig({ output_dir: null, ...msg.config, access_list: Array.isArray(msg.config.access_list) ? msg.config.access_list : [] })
         setOutputDirInput(msg.config.output_dir || '')
       }
     }
