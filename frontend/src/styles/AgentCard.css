@@ -7,7 +7,8 @@
   box-shadow: 0 0 6px rgba(34,197,94,0.4);
 }
 
-/* Active card pulse ring */
+/* Active card pulse ring — uses agent's own accent colour via --agent-pulse
+   set inline on the avatar element in AgentCard.jsx */
 .agent-card.active .agent-avatar {
-  box-shadow: 0 0 0 2px rgba(99,102,241,0.3);
+  box-shadow: 0 0 0 2px var(--agent-pulse, rgba(99,102,241,0.3));
 }

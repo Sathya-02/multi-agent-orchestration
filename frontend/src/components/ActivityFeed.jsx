@@ -18,13 +18,30 @@ const BUILTIN_LABELS = {
   system:      '⚙️  System',
 }
 
-function cleanMessage(raw) {
-  return (raw || '')
-    .replace(/\x1b\[[0-9;]*m/g, '')
-    .replace(/^\[[\d;]+m/g, '')
-    .replace(/^(Thought:|Action:|Action Input:|Observation:)\s*/i, '')
-    .replace(/\*\*(.*?)\*\*/g, '$1')
+// Comprehensive ANSI strip — covers CSI (including 256-colour & truecolor/RGB),
+// OSC sequences, other Fe/Fp/Fs escapes, and bare carriage returns.
+function stripAnsi(str) {
+  if (typeof str !== 'string') return str
+  return str
+    .replace(/\x1b\[[\d;]*[A-Za-z]/g, '')              // CSI sequences
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC sequences
+    .replace(/\x1b[O=><][\d;]*[A-Za-z]?/g, '')         // Fe / Fp / Fs escapes
+    .replace(/\x1b[^[\]O=><]/g, '')                    // remaining lone ESC + char
+    .replace(/\r/g, '')                                  // bare carriage returns
     .trim()
+}
+
+function cleanMessage(raw) {
+  return stripAnsi(raw || '')
+    .replace(/^\[[\d;]+m/g, '')                                // leftover bracket sequences
+    .replace(/^(Thought:|Action:|Action Input:|Observation:)\s*/i, '') // ReAct prefixes
+    .replace(/\*\*(.*?)\*\*/g, '$1')                          // markdown bold
+    .trim()
+}
+
+// Sanitise label strings — strips ANSI and trims whitespace.
+function cleanLabel(raw) {
+  return typeof raw === 'string' ? stripAnsi(raw).trim() : raw
 }
 
 function formatTime(ts) {
@@ -58,13 +75,14 @@ export default function ActivityFeed({ logs, agents }) {
       )}
 
       {logs.map((log, i) => {
-        const color      = agentColorMap[log.agent] || agentColorMap.system
-        const label      = log.label || agentLabelMap[log.agent] || log.agent
-        const message    = cleanMessage(log.message)
-        const isPhase    = log.phase === true
-        const isResult   = log.taskResult === true
-        const isError    = message.startsWith('❌')
-        const isDone     = message.startsWith('✅')
+        const color   = agentColorMap[log.agent] || agentColorMap.system
+        // Sanitize label: prefer built-in map, fall back to (sanitised) log.label
+        const label   = agentLabelMap[log.agent] || cleanLabel(log.label) || log.agent
+        const message = cleanMessage(log.message)
+        const isPhase  = log.phase === true
+        const isResult = log.taskResult === true
+        const isError  = message.startsWith('❌')
+        const isDone   = message.startsWith('✅')
 
         if (!message) return null
 

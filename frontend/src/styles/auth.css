@@ -141,3 +141,54 @@
   color: var(--tx-hint);
   line-height: 1.5;
 }
+
+/* ─── Light mode overrides ──────────────────────────────────────── */
+/* Applies when system preference is light AND no manual theme is set,
+   or when [data-theme="light"] is set explicitly on <html>. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .auth-overlay,
+  :root:not([data-theme]) .auth-card {
+    background: #ffffff;
+    color: #1a1a2e;
+  }
+}
+
+[data-theme="light"] .auth-overlay {
+  background: #f4f4f8;
+}
+
+[data-theme="light"] .auth-card {
+  background: #ffffff;
+  border-color: rgba(0,0,0,0.10);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.10), 0 0 0 1px rgba(99,102,241,0.08);
+  color: #1a1a2e;
+}
+
+[data-theme="light"] .auth-title {
+  color: #0f0f1a;
+}
+
+[data-theme="light"] .auth-subtitle,
+[data-theme="light"] .auth-footer {
+  color: #6b7280;
+}
+
+[data-theme="light"] .auth-field label {
+  color: #374151;
+}
+
+[data-theme="light"] .auth-field input {
+  background: #f9f9fb;
+  border-color: rgba(0,0,0,0.14);
+  color: #0f0f1a;
+}
+
+[data-theme="light"] .auth-field input::placeholder {
+  color: #9ca3af;
+}
+
+[data-theme="light"] .auth-logo-mark {
+  background: rgba(91,110,245,0.08);
+  border-color: rgba(91,110,245,0.22);
+  box-shadow: 0 0 16px rgba(91,110,245,0.12);
+}
