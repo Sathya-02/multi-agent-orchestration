@@ -102,7 +102,10 @@ from crewai import Crew, Process
 import collections
 
 # ── Sub-system imports ────────────────────────────────────────────────────
-from config.model import get_active_model, set_active_model, get_llm_config, list_presets
+from config.model import (
+    get_active_model, set_active_model, get_llm_config,
+    list_presets, list_models_with_status,
+)
 from agents.registry import (
     get_all_agents, get_active_agents, get_agent, find_agent_by_role,
     role_exists, add_agent, update_agent, remove_agent, set_agent_active,
@@ -244,8 +247,8 @@ def _label(agent_id: str) -> str:
         return f"{a.get('icon','🤖')} {a.get('label', agent_id.title())}"
     fallback = {
         "coordinator": "🎯 Coordinator", "researcher": "🔍 Researcher",
-        "analyst": "📊 Analyst",         "writer": "✍️  Writer",
-        "system": "⚙️  System",
+        "analyst":     "📊 Analyst",     "writer":      "✍️  Writer",
+        "system":      "⚙️  System",
     }
     return fallback.get(agent_id, f"🤖 {agent_id.title()}")
 
@@ -425,16 +428,18 @@ _start_time = time.time()
 
 @app.get("/models")
 def list_models(current_user=_auth_dep):
-    return {
-        "active":  get_active_model(),
-        "presets": list_presets(),
-    }
+    """
+    Returns the full model list with pulled/installed status.
+    Shape: { "active_model": str, "models": [ { "name", "pulled", ... } ] }
+    This matches what the frontend fetchModels() expects.
+    """
+    return list_models_with_status()
 
 @app.post("/models/select")
 def select_model(body: ModelSelect, current_user=_auth_dep):
     set_active_model(body.model)
     sync_broadcast({"type": "model_changed", "model": body.model})
-    return {"active": body.model}
+    return {"active_model": body.model}
 
 @app.get("/models/presets")
 def get_presets(current_user=_auth_dep):
