@@ -101,7 +101,8 @@ html, body, #root {
   height: 100%;
   overflow: hidden;
   font-family: var(--sans);
-  font-size: 13px;
+  /* 14px base — meets WCAG minimum legibility floor (was 13px) */
+  font-size: 14px;
   background: var(--bg);
   color: var(--text);
   line-height: 1.5;
