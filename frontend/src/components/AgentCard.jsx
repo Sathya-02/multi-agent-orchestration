@@ -1,68 +1,44 @@
-import React from 'react';
-
-const BUILTIN_COLORS = {
-  coordinator: 'var(--coord)',
-  researcher:  'var(--res)',
-  analyst:     'var(--anal)',
-  writer:      'var(--writ)',
-};
-
-const BUILTIN_IDS = new Set(['coordinator', 'researcher', 'analyst', 'writer']);
-
-function resolveColor(agent) {
-  const id = (agent.id || agent.role || '').toLowerCase();
-  if (BUILTIN_COLORS[id]) return BUILTIN_COLORS[id];
-  return agent.color || 'var(--tx-muted)';
-}
-
 export default function AgentCard({ agentId, agentMeta, active, lastMessage, inactive }) {
-  if (!agentMeta) return null;
-
-  const { id, role, label, icon, color, builtin } = agentMeta;
-  const agentIdKey = (id || role || '').toLowerCase();
-  const isBuiltin = builtin || BUILTIN_IDS.has(agentIdKey);
-  const resolvedColor = resolveColor(agentMeta);
-  const displayLabel = label || role || id || '?';
-
-  const cardClass = [
-    'agent-card',
-    isBuiltin ? 'builtin' : 'custom',
-    active   ? 'active'  : '',
-    inactive ? 'inactive': '',
-  ].filter(Boolean).join(' ');
+  const color  = inactive ? '#94a3b8' : (agentMeta?.color || '#6366f1')
+  const icon   = agentMeta?.icon  || '🤖'
+  const role   = agentMeta?.role  || agentId
+  const label  = agentMeta?.label || agentId.toUpperCase()
 
   return (
-    <div
-      className={cardClass}
-      style={{ '--agent-col': resolvedColor }}
-    >
-      <div className="agent-icon" aria-hidden="true">
-        {icon || (isBuiltin ? '🤖' : '🖥️')}
+    <div className={`agent-card ${active ? 'active' : ''} ${inactive ? 'agent-card-inactive' : ''}`}>
+      <div className="agent-avatar"
+        style={{ background: `${color}22`, border: `1px solid ${color}55`,
+                 opacity: inactive ? 0.45 : 1 }}>
+        {icon}
       </div>
-
       <div className="agent-info">
-        <div className="agent-label">{displayLabel.toUpperCase()}</div>
-        {role && role !== displayLabel && (
-          <div className="agent-role">{role}</div>
-        )}
-        {lastMessage && (
-          <div className="agent-last-msg" title={lastMessage}>
-            {lastMessage.length > 72 ? lastMessage.slice(0, 72) + '…' : lastMessage}
+        <div style={{display:'flex',alignItems:'center',gap:5}}>
+          <div className="agent-role" style={{ color: inactive ? 'var(--tx-muted)' : undefined }}>
+            {role}
           </div>
-        )}
+          {inactive && (
+            <span style={{
+              fontSize:9, fontWeight:800, color:'#94a3b8',
+              background:'rgba(148,163,184,0.15)',
+              border:'1px solid rgba(148,163,184,0.3)',
+              borderRadius:4, padding:'1px 5px', letterSpacing:'.05em'
+            }}>INACTIVE</span>
+          )}
+        </div>
+        <div className={`agent-status ${active && !inactive ? 'thinking' : ''}`}
+          style={{ color: inactive ? 'var(--tx-hint)' : undefined }}>
+          {inactive
+            ? 'Deactivated — not joining jobs'
+            : active
+              ? '● thinking…'
+              : lastMessage
+                ? lastMessage.slice(0, 36) + (lastMessage.length > 36 ? '…' : '')
+                : 'idle'}
+        </div>
       </div>
-
-      <div className="agent-badges">
-        {isBuiltin && !inactive && (
-          <span className="agent-builtin-badge">BUILT-IN</span>
-        )}
-        {!isBuiltin && !inactive && (
-          <span className="agent-custom-badge">CUSTOM</span>
-        )}
-        {inactive && (
-          <span className="agent-inactive-badge">INACTIVE</span>
-        )}
-      </div>
+      <div className="agent-indicator"
+        style={{ background: inactive ? '#334155' : active ? color : '#334155',
+                 opacity: inactive ? 0.35 : 1 }} />
     </div>
-  );
+  )
 }
