@@ -180,7 +180,13 @@ export default function App() {
   const fetchModels = async () => {
     try {
       const d = await fetch(`${API_URL}/models`).then(r=>r.json())
-      if (d.models) { setAvailableModels(d.models); setCurrentModel(d.active_model); setSelectedModel(d.active_model) }
+      if (d.models) {
+        // Normalize: API may return [{name, pulled, ...}] objects OR plain strings
+        const names = d.models.map(m => (typeof m === 'string' ? m : m.name)).filter(Boolean)
+        setAvailableModels(names)
+        setCurrentModel(d.active_model)
+        setSelectedModel(d.active_model)
+      }
     } catch {}
   }
   const fetchUploads = async () => {
