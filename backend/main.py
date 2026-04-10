@@ -1,7 +1,16 @@
+# ---------------------------------------------------------------------------
+# Disable CrewAI / OpenTelemetry telemetry BEFORE any crewai import.
+# Without this, crew.kickoff() opens an HTTP span to telemetry.crewai.com:4319
+# which times out (~10 s) on offline/local setups, making the coordinator
+# appear frozen.
+# ---------------------------------------------------------------------------
+import os
+os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
+
 import asyncio
 import json
 import logging
-import os
 import re
 import shutil
 import subprocess
@@ -549,31 +558,17 @@ async def broadcast(msg: dict):
 # ---------------------------------------------------------------------------
 # sync_broadcast — callable from synchronous tool code (e.g. SpawnAgentTool,
 # SpawnToolTool) that runs in a background thread outside the event loop.
-# It schedules the async broadcast coroutine onto the running event loop and
-# waits up to 2 s for delivery.
 # ---------------------------------------------------------------------------
 def sync_broadcast(msg: dict) -> None:
     """
     Thread-safe synchronous wrapper around the async broadcast() coroutine.
-
-    SpawnAgentTool and SpawnToolTool in tools.py call:
-        import main as _main
-        _main.sync_broadcast({...})
-
-    Because those tools execute in a worker thread (via run_in_executor),
-    they cannot use `await` directly. This function bridges the gap by
-    scheduling the coroutine on the running event loop.
+    Fire-and-forget: schedules on the running event loop without blocking.
     """
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
-            future = asyncio.run_coroutine_threadsafe(broadcast(msg), loop)
-            try:
-                future.result(timeout=2)
-            except Exception as exc:
-                logger.debug("sync_broadcast delivery error (ignored): %s", exc)
+            asyncio.run_coroutine_threadsafe(broadcast(msg), loop)
         else:
-            # Fallback: run a fresh event loop if none is running
             loop.run_until_complete(broadcast(msg))
     except Exception as exc:
         logger.debug("sync_broadcast error (ignored): %s", exc)
@@ -735,11 +730,10 @@ async def run_job(
         }
     )
 
-    # FIX: Capture the running event loop HERE (in the async context),
-    # BEFORE entering the executor thread where get_event_loop() would
-    # return the wrong loop (or raise DeprecationWarning in Python 3.10+).
-    # This is the root cause of the activity feed and 3D boardroom not
-    # receiving any WebSocket messages during crew execution.
+    # FIX 2: Capture the running event loop HERE in the async endpoint scope,
+    # NOT inside _run(). In Python 3.10+ asyncio.get_event_loop() inside a
+    # background task or thread can return a different / closed loop, causing
+    # run_coroutine_threadsafe to silently drop all WebSocket messages.
     _loop = asyncio.get_event_loop()
 
     async def _run():
@@ -758,6 +752,8 @@ async def run_job(
                     report_dir=REPORT_DIR,
                     agent_dir=AGENT_DIR,
                     tool_dir=TOOL_DIR,
+                    # FIX 2 (cont): use _loop from outer scope, fire-and-forget
+                    # (no .result() wait — that blocked the thread 2s per message)
                     broadcast_fn=lambda msg: asyncio.run_coroutine_threadsafe(
                         broadcast(msg), _loop
                     ),
@@ -995,14 +991,10 @@ async def decide_tool_spawn(body: ToolSpawnDecision, current_user=_auth_dep):
 # ---------------------------------------------------------------------------
 @app.get("/kb/entries")
 def kb_list_entries(current_user=_auth_dep):
-    """
-    BUG FIX: get_all_entries() returns a plain list; the frontend expects
-    {entries, sources, count}. Wrap it in the right shape here.
-    """
     if not RAG_ENABLED:
         return {"entries": [], "sources": [], "count": 0}
-    entries = get_all_entries()          # list[dict], no 'vector' keys
-    sources = list_sources()             # list[{source, chunks, ts, tags}]
+    entries = get_all_entries()
+    sources = list_sources()
     return {
         "entries": entries,
         "sources": sources,
@@ -1034,32 +1026,21 @@ def kb_update_config(body: KBConfigUpdate, current_user=_auth_dep):
 
 @app.post("/kb/ingest-text")
 def kb_ingest_text_endpoint(body: KBIngestText, current_user=_auth_dep):
-    """
-    BUG FIX: rag_engine.ingest_text() signature is
-        ingest_text(text, source_name, tags=None)
-    NOT source=... (keyword mismatch caused it to always use the default
-    name and return a dict, not an int).
-    Return the full result dict so the caller gets meaningful info.
-    """
     if not RAG_ENABLED:
         raise HTTPException(status_code=404, detail="RAG disabled")
     result = ingest_text(body.text, body.source, tags=body.tags)
-    return result  # {source, chunks_added, chunks_skipped, message}
+    return result
 
 
 @app.post("/kb/ingest-file")
 async def kb_ingest_file(file: UploadFile = File(...), current_user=_auth_dep):
-    """
-    BUG FIX: ingest_file() returns a dict {source, chunks_added, ...},
-    not an int. Unwrap the result correctly.
-    """
     if not RAG_ENABLED:
         raise HTTPException(status_code=404, detail="RAG disabled")
     dest = KB_DIR / file.filename
     with open(dest, "wb") as fh:
         shutil.copyfileobj(file.file, fh)
-    result = ingest_file(dest)           # returns dict, not int
-    return result  # {source, chunks_added, chunks_skipped, removed_old, message}
+    result = ingest_file(dest)
+    return result
 
 
 @app.delete("/kb/entries/{entry_id}")
@@ -1080,11 +1061,6 @@ def kb_delete_source(source: str, current_user=_auth_dep):
 
 @app.post("/kb/clear")
 def kb_clear(current_user=_auth_dep):
-    """
-    BUG FIX: old code called _load_store() (returns None, not a dict),
-    then did store['entries'] = [] which crashed with TypeError.
-    Use the proper clear_store() helper instead.
-    """
     if not RAG_ENABLED:
         raise HTTPException(status_code=404, detail="RAG disabled")
     clear_store()
@@ -1093,11 +1069,6 @@ def kb_clear(current_user=_auth_dep):
 
 @app.get("/kb/search")
 def kb_search_endpoint(q: str = Query(...), current_user=_auth_dep):
-    """
-    kb_search() (alias for search()) returns a formatted string for LLM
-    consumption.  For the UI search endpoint return the raw chunk list
-    from retrieve() so the frontend can render individual results.
-    """
     if not RAG_ENABLED:
         return {"result": [], "error": "RAG disabled"}
     try:
