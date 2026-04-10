@@ -143,6 +143,7 @@ export default function App() {
   const activeTimer = useRef(null)
   const statsTimer  = useRef(null)
   const modelTimer = useRef(null)
+  const handleMsgRef = useRef(null)
 
   const [ragQuery,   setRagQuery]   = useState('')
   const [ragTopK,    setRagTopK]    = useState(4)
@@ -180,7 +181,7 @@ export default function App() {
         // Re-fetch current state in case we missed events during reconnect
         fetchAgents(); fetchTools()
       }
-      ws.onmessage = (e) => handleMessage(JSON.parse(e.data))
+      ws.onmessage = (e) => handleMsgRef.current?.(JSON.parse(e.data))
       ws.onclose   = () => { setConnected(false); setTimeout(connect, 1500) }
       ws.onerror   = () => ws.close()
     }
@@ -715,6 +716,8 @@ export default function App() {
     }
   }, [currentModel, addLog])
 
+  useEffect(() => { handleMsgRef.current = handleMessage }, [handleMessage])
+
   /* ── Model actions ────────────────────────────────────── */
   const handleModelChange = async () => {
     const currentStr = typeof currentModel === 'string' ? currentModel : ''
@@ -935,7 +938,7 @@ const handleOpenSkills = async (agent) => {
       {/* ── Dashboard Overlay ─────────────────────────────── */}
       {showDashboard && stats && (
         <>
-        <div className="overlay-backdrop" onClick={() => setShowSettings(false)} />
+        <div className="overlay-backdrop" onClick={() => setShowDashboard(false)} />
         <div className="overlay-panel dashboard-panel">
           <div className="overlay-header">
             <span>📊 System Dashboard</span>
@@ -963,7 +966,7 @@ const handleOpenSkills = async (agent) => {
       {/* ── File Upload Overlay ────────────────────────────── */}
       {showUploadPanel && (
         <>
-        <div className="overlay-backdrop" onClick={() => setShowSettings(false)} />
+        <div className="overlay-backdrop" onClick={() => setShowUploadPanel(false)} />
         <div className="overlay-panel upload-panel">
           <div className="overlay-header">
             <span>📎 File Manager</span>
@@ -1033,7 +1036,7 @@ const handleOpenSkills = async (agent) => {
       {/* ── Filesystem Config Overlay ─────────────────────── */}
       {showFsPanel && (
         <>
-        <div className="overlay-backdrop" onClick={() => setShowSettings(false)} />
+        <div className="overlay-backdrop" onClick={() => setShowFsPanel(false)} />
         <div className="overlay-panel fs-panel">
           <div className="overlay-header">
             <span>📁 Filesystem Access</span>
@@ -1173,7 +1176,7 @@ const handleOpenSkills = async (agent) => {
       {/* ── Agent Editor Overlay ───────────────────────────── */}
       {showAgentEditor && (
         <>
-        <div className="overlay-backdrop" onClick={() => setShowSettings(false)} />
+        <div className="overlay-backdrop" onClick={() => setShowAgentEditor(false)} />
         <div className="overlay-panel agent-panel">
           <div className="overlay-header">
             <span>🤖 Agent Manager</span>
@@ -1404,7 +1407,7 @@ const handleOpenSkills = async (agent) => {
       {/* ── Tools Panel ────────────────────────────────────── */}
       {showToolPanel && (
         <>
-        <div className="overlay-backdrop" onClick={() => setShowSettings(false)} />
+        <div className="overlay-backdrop" onClick={() => setShowToolPanel(false)} />
         <div className="overlay-panel agent-panel" style={{width:640}}>
           <div className="overlay-header">
             <span>🔧 Tool Manager</span>
@@ -1990,7 +1993,7 @@ const handleOpenSkills = async (agent) => {
       {/* ── Knowledge Base Panel ──────────────────────────── */}
       {showKbPanel && (
         <>
-        <div className="overlay-backdrop" onClick={() => setShowSettings(false)} />
+        <div className="overlay-backdrop" onClick={() => setShowKbPanel(false)} />
         <div className="overlay-panel kb-panel">
           <div className="overlay-header">
             <span>📚 Knowledge Base · {kbEntries.count} chunks · {kbEntries.sources?.length || 0} sources</span>
