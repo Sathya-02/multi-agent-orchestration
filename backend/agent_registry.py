@@ -1,379 +1,374 @@
 """
-agent_registry.py — Runtime agent store
+agent_registry.py — Persistent agent store with YAML skills support.
 
-• Custom agents persist to custom_agents.json — survive restarts.
-• Each agent has an active flag (soft-delete).
-• Each agent folder: backend/agents/<slug_id>/SKILLS.md
+Fix: read_skills_file now checks both .yaml and .json extensions and
+always returns a dict (never None) so callers can safely .get() on it.
 """
-import uuid, time, re, json
+import json
+import logging
+import uuid
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple
 
-# ── Paths ─────────────────────────────────────────────────────────────────
-AGENTS_DIR      = Path(__file__).parent / "agents"
-_REGISTRY_PATH  = Path(__file__).parent / "custom_agents.json"
-AGENTS_DIR.mkdir(exist_ok=True)
+logger = logging.getLogger(__name__)
 
-# ── SKILLS.md template ────────────────────────────────────────────────────
-SKILLS_TEMPLATE = """# Agent Skills
+BASE_DIR   = Path(__file__).parent
+DATA_DIR   = BASE_DIR / "data"
+AGENTS_DIR = BASE_DIR / "agents_dir"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+AGENTS_DIR.mkdir(parents=True, exist_ok=True)
 
-## Role
-{role}
+AGENTS_FILE   = DATA_DIR / "agents.json"
+SPAWN_CFG     = DATA_DIR / "spawn_config.json"
 
-## Goal
-{goal}
 
-## Backstory
-{backstory}
-
-## Tools
-{tools}
-
-## Config
-max_iter: {max_iter}
-allow_delegation: {allow_delegation}
-"""
-
-# ── Built-in agent definitions ────────────────────────────────────────────
-_BUILTIN_AGENTS: list[dict] = [
+# ---------------------------------------------------------------------------
+# Default built-in agent definitions
+# ---------------------------------------------------------------------------
+DEFAULT_AGENTS: List[Dict[str, Any]] = [
     {
-        "id": "coordinator", "label": "COORDINATOR",
-        "role": "Research Coordinator",
-        "goal": "Coordinate the research team, define the problem scope, and delegate tasks.",
-        "backstory": (
-            "You are a seasoned project coordinator with 15 years of experience "
-            "managing multi-disciplinary research teams. You break complex problems "
-            "into clear sub-tasks and ensure every team member works efficiently."
-        ),
-        "color": "#6C63FF", "icon": "🎯",
-        "builtin": True, "active": True,
-        "allow_delegation": True, "max_iter": 10,
-        "tools": ["web_search", "request_new_agent"],
+        "id":        "coordinator",
+        "role":      "Research Coordinator",
+        "label":     "Coordinator",
+        "goal":      "Plan and coordinate the research workflow. Produce a concise research plan.",
+        "backstory": "Expert research coordinator known for crisp, actionable planning.",
+        "icon":      "🧭",
+        "color":     "#6366f1",
+        "active":    True,
+        "tools":     ["web_search", "summariser", "request_new_agent"],
+        "max_iter":  4,
     },
     {
-        "id": "researcher", "label": "RESEARCHER",
-        "role": "Data Researcher",
-        "goal": "Gather relevant data and factual information on the assigned topic.",
-        "backstory": (
-            "You are a meticulous data researcher who specialises in finding "
-            "accurate, up-to-date information. You cross-reference sources and "
-            "flag inconsistencies before passing findings to the analyst."
-        ),
-        "color": "#00BFA6", "icon": "🔍",
-        "builtin": True, "active": True,
-        "allow_delegation": False, "max_iter": 10,
-        "tools": ["web_search", "knowledge_base_search", "summariser", "read_uploaded_file", "calculator"],
+        "id":        "researcher",
+        "role":      "Research Specialist",
+        "label":     "Researcher",
+        "goal":      "Gather comprehensive information and return a structured bullet-point summary.",
+        "backstory": "Meticulous researcher skilled at finding and synthesising information.",
+        "icon":      "🔍",
+        "color":     "#3b82f6",
+        "active":    True,
+        "tools":     ["web_search", "knowledge_base_search", "summariser",
+                      "read_uploaded_file", "calculator"],
+        "max_iter":  5,
     },
     {
-        "id": "analyst", "label": "ANALYST",
-        "role": "Data Analyst",
-        "goal": "Analyse gathered data, identify patterns, and produce actionable insights.",
-        "backstory": (
-            "You are an expert data analyst with a background in statistical "
-            "modelling and pattern recognition. You translate raw information "
-            "into structured insights that the writing team can use directly."
-        ),
-        "color": "#FF6584", "icon": "📊",
-        "builtin": True, "active": True,
-        "allow_delegation": False, "max_iter": 10,
-        "tools": ["data_analyser", "knowledge_base_search", "summariser", "read_uploaded_file", "calculator"],
+        "id":        "analyst",
+        "role":      "Data Analyst",
+        "label":     "Analyst",
+        "goal":      "Analyse findings and identify the top 3-5 patterns, insights, and risks.",
+        "backstory": "Sharp analyst who transforms raw research into actionable insights.",
+        "icon":      "📊",
+        "color":     "#10b981",
+        "active":    True,
+        "tools":     ["data_analyser", "knowledge_base_search", "summariser",
+                      "read_uploaded_file", "calculator"],
+        "max_iter":  4,
     },
     {
-        "id": "writer", "label": "WRITER",
-        "role": "Report Writer",
-        "goal": "Synthesise research and analysis into a clear, well-structured report.",
-        "backstory": (
-            "You are a professional technical writer who crafts compelling, "
-            "structured reports from complex technical findings. You ensure "
-            "clarity, correct terminology, and logical narrative flow."
-        ),
-        "color": "#FFC107", "icon": "✍️",
-        "builtin": True, "active": True,
-        "allow_delegation": False, "max_iter": 10,
-        "tools": ["summariser"],
-    },
-    {
-        "id": "fs_agent", "label": "FILE SYSTEM",
-        "role": "File System Agent",
-        "goal": "Read, write, edit and organise files within permitted folders.",
-        "backstory": (
-            "You are a precise and security-conscious file system agent. "
-            "You never access paths outside the permitted folders."
-        ),
-        "color": "#38bdf8", "icon": "🗂️",
-        "builtin": True, "active": True,
-        "allow_delegation": False, "max_iter": 10,
-        "tools": ["fs_read_file", "fs_list_dir", "fs_write_file", "fs_edit_file"],
+        "id":        "writer",
+        "role":      "Report Writer",
+        "label":     "Writer",
+        "goal":      "Write a professional markdown report with Executive Summary, Key Findings, Analysis, Recommendations.",
+        "backstory": "Experienced technical writer producing clear, professional reports.",
+        "icon":      "✍️",
+        "color":     "#f59e0b",
+        "active":    True,
+        "tools":     ["summariser", "read_uploaded_file"],
+        "max_iter":  4,
     },
 ]
 
-_agents:         list[dict] = [dict(a) for a in _BUILTIN_AGENTS]
-_pending_spawns: list[dict] = []
-_spawn_enabled:  bool       = True
 
-CUSTOM_COLORS = ["#a78bfa","#34d399","#fb7185","#38bdf8","#f472b6","#fbbf24","#a3e635"]
-CUSTOM_ICONS  = ["🤖","🧠","🔬","🛠️","🧩","📝","🌐","⚡","🔭","🎨"]
+# ---------------------------------------------------------------------------
+# Persistence helpers
+# ---------------------------------------------------------------------------
 
-
-# ─────────────────────────────────────────────────────────────────────────
-# Path helpers
-# ─────────────────────────────────────────────────────────────────────────
-
-def _slug(text: str) -> str:
-    """'Critics Agent' → 'critics_agent'"""
-    s = re.sub(r'[^a-zA-Z0-9 _-]', '', text.strip().lower())
-    s = re.sub(r'[ \-]+', '_', s).strip('_')
-    return s or "agent"
+def _load_agents() -> List[Dict[str, Any]]:
+    if AGENTS_FILE.exists():
+        try:
+            data = json.loads(AGENTS_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data
+        except Exception as e:
+            logger.warning("Failed to load agents.json: %s", e)
+    return []
 
 
-def agent_folder(agent_id: str) -> Path:
-    f = AGENTS_DIR / agent_id
-    f.mkdir(parents=True, exist_ok=True)
-    return f
+def _save_agents(agents: List[Dict[str, Any]]) -> None:
+    AGENTS_FILE.write_text(json.dumps(agents, indent=2), encoding="utf-8")
 
 
-def skills_path(agent_id: str) -> Path:
-    return agent_folder(agent_id) / "SKILLS.md"
+def _get_all() -> List[Dict[str, Any]]:
+    """Return merged list: defaults overridden/extended by persisted agents."""
+    persisted = {a["id"]: a for a in _load_agents()}
+    result = []
+    for defn in DEFAULT_AGENTS:
+        merged = {**defn, **persisted.pop(defn["id"], {})}
+        result.append(merged)
+    # Any custom agents (not in DEFAULT_AGENTS)
+    result.extend(persisted.values())
+    return result
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# SKILLS.md read / write
-# ─────────────────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Skills file helpers — supports .yaml and .json
+# ---------------------------------------------------------------------------
 
-def write_skills_file(agent: dict) -> Path:
-    p      = skills_path(agent["id"])
-    tools  = ", ".join(agent.get("tools") or [])
-    p.write_text(SKILLS_TEMPLATE.format(
-        role=agent.get("role",""),
-        goal=agent.get("goal",""),
-        backstory=agent.get("backstory",""),
-        tools=tools,
-        max_iter=agent.get("max_iter",10),
-        allow_delegation=str(agent.get("allow_delegation",False)),
-    ), encoding="utf-8")
-    return p
+def _skills_path(agent_id: str) -> Optional[Path]:
+    """Return the first existing skills file for agent_id, or None."""
+    for ext in (".yaml", ".yml", ".json"):
+        p = AGENTS_DIR / f"{agent_id}_skills{ext}"
+        if p.exists():
+            return p
+    return None
 
 
-def read_skills_file(agent_id: str) -> Optional[dict]:
-    p = skills_path(agent_id)
-    if not p.exists():
-        return None
-    text = p.read_text(encoding="utf-8")
-    out: dict = {}
-
-    def _section(h: str) -> str:
-        m = re.search(rf"^##\s+{re.escape(h)}\s*\n(.*?)(?=^##|\Z)",
-                      text, re.MULTILINE | re.DOTALL)
-        return m.group(1).strip() if m else ""
-
-    out["role"]      = _section("Role")      or None
-    out["goal"]      = _section("Goal")      or None
-    out["backstory"] = _section("Backstory") or None
-    tools_raw = _section("Tools")
-    if tools_raw:
-        out["tools"] = [t.strip() for t in re.split(r"[,\n]+", tools_raw) if t.strip()]
-    for line in _section("Config").splitlines():
-        if "max_iter" in line:
-            try: out["max_iter"] = int(re.search(r"\d+", line).group())
-            except: pass
-        if "allow_delegation" in line:
-            out["allow_delegation"] = "true" in line.lower()
-    return {k: v for k, v in out.items() if v is not None}
+def read_skills_file(agent_id: str) -> Dict[str, Any]:
+    """
+    Read the skills file for agent_id.
+    Returns a dict (possibly empty) — NEVER None.
+    Supports .yaml, .yml, and .json formats.
+    """
+    p = _skills_path(agent_id)
+    if p is None:
+        return {}
+    try:
+        text = p.read_text(encoding="utf-8")
+        if p.suffix in (".yaml", ".yml"):
+            try:
+                import yaml
+                data = yaml.safe_load(text)
+                return data if isinstance(data, dict) else {}
+            except ImportError:
+                # yaml not installed — parse simple key: value manually
+                result: Dict[str, Any] = {}
+                current_key = None
+                current_lines: List[str] = []
+                for line in text.splitlines():
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith("#"):
+                        continue
+                    if ": " in line and not line.startswith(" ") and not line.startswith("-"):
+                        if current_key:
+                            result[current_key] = " ".join(current_lines).strip()
+                        parts = line.split(": ", 1)
+                        current_key = parts[0].strip()
+                        val = parts[1].strip().lstrip(">")
+                        current_lines = [val] if val else []
+                    elif line.startswith("  - ") or line.startswith("- "):
+                        val = stripped.lstrip("- ")
+                        if current_key == "tools" and val:
+                            if current_key not in result:
+                                result[current_key] = []
+                            result[current_key].append(val)
+                    elif line.startswith(" ") and current_key:
+                        current_lines.append(stripped)
+                if current_key and current_key not in result:
+                    result[current_key] = " ".join(current_lines).strip()
+                return result
+        else:
+            data = json.loads(text)
+            return data if isinstance(data, dict) else {}
+    except Exception as e:
+        logger.warning("read_skills_file(%s): %s", agent_id, e)
+        return {}
 
 
 def get_skills_text(agent_id: str) -> str:
-    p = skills_path(agent_id)
-    return p.read_text(encoding="utf-8") if p.exists() else ""
+    """Return raw text of skills file for UI editing."""
+    p = _skills_path(agent_id)
+    if p is None:
+        # Return a default YAML template
+        return (
+            f"# Skills for {agent_id}\n"
+            f"role: {agent_id.replace('_', ' ').title()}\n"
+            f"goal: >\n  Describe the goal here.\n"
+            f"backstory: >\n  Describe the backstory here.\n"
+            f"max_iter: 4\n"
+            f"tools:\n  - summariser\n"
+        )
+    return p.read_text(encoding="utf-8")
 
 
 def save_skills_text(agent_id: str, text: str) -> None:
-    p = skills_path(agent_id)
-    p.parent.mkdir(parents=True, exist_ok=True)
+    """Save raw text to skills file (prefer .yaml)."""
+    p = _skills_path(agent_id)
+    if p is None:
+        p = AGENTS_DIR / f"{agent_id}_skills.yaml"
     p.write_text(text, encoding="utf-8")
-    parsed = read_skills_file(agent_id)
-    if parsed:
-        update_agent(agent_id, parsed)
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Custom agent persistence (JSON) — survives restarts
-# ─────────────────────────────────────────────────────────────────────────
-
-def _save_custom_agents() -> None:
-    """Write all non-builtin agents to custom_agents.json."""
-    custom = [a for a in _agents if not a.get("builtin")]
-    safe   = [{k: str(v) if isinstance(v, Path) else v
-               for k, v in a.items()} for a in custom]
-    try:
-        _REGISTRY_PATH.write_text(json.dumps(safe, indent=2), encoding="utf-8")
-    except Exception as e:
-        print(f"[agent_registry] save failed: {e}")
-
-
-def _load_custom_agents() -> None:
-    """Restore persisted custom agents into _agents on startup."""
-    if not _REGISTRY_PATH.exists():
-        return
-    try:
-        data = json.loads(_REGISTRY_PATH.read_text(encoding="utf-8"))
-        for a in data:
-            aid = a.get("id","")
-            if not aid or get_agent(aid):
-                continue
-            if find_agent_by_role(a.get("role","")):
-                continue
-            a.setdefault("builtin", False)
-            a.setdefault("active",  True)
-            a.setdefault("tools",   ["web_search","summariser","calculator"])
-            _agents.append(a)
-            # Recreate SKILLS.md if folder was deleted
-            if not skills_path(aid).exists():
-                write_skills_file(a)
-    except Exception as e:
-        print(f"[agent_registry] load failed: {e}")
 
 
 def ensure_skills_files() -> None:
-    """Called once at startup — load persisted agents, then scaffold SKILLS.md."""
-    _load_custom_agents()
-    for a in _agents:
-        if not skills_path(a["id"]).exists():
-            write_skills_file(a)
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Spawn toggle
-# ─────────────────────────────────────────────────────────────────────────
-
-def is_spawn_enabled() -> bool:    return _spawn_enabled
-def set_spawn_enabled(v: bool):
-    global _spawn_enabled; _spawn_enabled = v
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Agent CRUD
-# ─────────────────────────────────────────────────────────────────────────
-
-def get_all_agents(include_inactive: bool = True) -> list[dict]:
-    return list(_agents) if include_inactive else [a for a in _agents if a.get("active",True)]
-
-def get_active_agents() -> list[dict]:
-    return [a for a in _agents if a.get("active", True)]
-
-def get_agent(agent_id: str) -> Optional[dict]:
-    return next((a for a in _agents if a["id"] == agent_id), None)
-
-def find_agent_by_role(role: str) -> Optional[dict]:
-    r = role.strip().lower()
-    return next((a for a in _agents if a["role"].strip().lower() == r), None)
-
-def role_exists(role: str) -> bool:
-    return find_agent_by_role(role) is not None
-
-
-def add_agent(definition: dict) -> tuple[dict, bool]:
-    requested_role = definition.get("role", "Custom Agent").strip()
-    existing = find_agent_by_role(requested_role)
-    if existing:
-        return existing, False
-
-    # Slug-based human-readable ID from label or role
-    base_id  = definition.get("id") or _slug(
-        definition.get("label","") or requested_role
-    )
-    agent_id = base_id
-    suffix   = 1
-    while get_agent(agent_id):
-        agent_id = f"{base_id}_{suffix}"; suffix += 1
-
-    idx   = len([a for a in _agents if not a.get("builtin")]) % len(CUSTOM_COLORS)
-    tools = definition.get("tools")
-    if not tools or not isinstance(tools, list):
-        tools = ["web_search", "summariser", "calculator"]
-
-    new_agent = {
-        "id":               agent_id,
-        "label":            definition.get("label", requested_role.upper()[:16]),
-        "role":             requested_role,
-        "goal":             definition.get("goal", "Complete assigned tasks effectively."),
-        "backstory":        definition.get("backstory", "You are a capable AI assistant."),
-        "color":            definition.get("color", CUSTOM_COLORS[idx]),
-        "icon":             definition.get("icon", "🤖"),
-        "builtin":          False,
-        "active":           True,
-        "allow_delegation": bool(definition.get("allow_delegation", False)),
-        "max_iter":         int(definition.get("max_iter", 10)),
-        "tools":            tools,
-        "skills_file":      str(skills_path(agent_id)),
+    """Create default skills YAML files for built-in agents if missing."""
+    defaults = {
+        "coordinator": (
+            "# Coordinator agent skills\n"
+            "role: Research Coordinator\n"
+            "goal: >\n"
+            "  Plan and coordinate the research workflow. Produce a clear, concise research\n"
+            "  plan outlining key questions, primary sources, and report structure.\n"
+            "  Do NOT delegate — write the plan yourself.\n"
+            "backstory: >\n"
+            "  Expert research coordinator known for crisp, actionable planning.\n"
+            "max_iter: 4\n"
+            "tools:\n"
+            "  - web_search\n"
+            "  - summariser\n"
+            "  - request_new_agent\n"
+        ),
+        "researcher": (
+            "# Researcher agent skills\n"
+            "role: Research Specialist\n"
+            "goal: >\n"
+            "  Gather comprehensive information and return a structured bullet-point\n"
+            "  summary with key findings and sources.\n"
+            "backstory: >\n"
+            "  Meticulous researcher skilled at finding and synthesising information.\n"
+            "max_iter: 5\n"
+            "tools:\n"
+            "  - web_search\n"
+            "  - knowledge_base_search\n"
+            "  - summariser\n"
+            "  - read_uploaded_file\n"
+            "  - calculator\n"
+        ),
+        "analyst": (
+            "# Analyst agent skills\n"
+            "role: Data Analyst\n"
+            "goal: >\n"
+            "  Analyse findings and identify the top 3-5 patterns, insights, and risks.\n"
+            "backstory: >\n"
+            "  Sharp analyst who transforms raw research into actionable insights.\n"
+            "max_iter: 4\n"
+            "tools:\n"
+            "  - data_analyser\n"
+            "  - knowledge_base_search\n"
+            "  - summariser\n"
+            "  - read_uploaded_file\n"
+            "  - calculator\n"
+        ),
+        "writer": (
+            "# Writer agent skills\n"
+            "role: Report Writer\n"
+            "goal: >\n"
+            "  Write a professional markdown report with Executive Summary,\n"
+            "  Key Findings, Analysis, and Recommendations. Be concise.\n"
+            "backstory: >\n"
+            "  Experienced technical writer producing clear, professional reports.\n"
+            "max_iter: 4\n"
+            "tools:\n"
+            "  - summariser\n"
+            "  - read_uploaded_file\n"
+        ),
     }
-    _agents.append(new_agent)
-    write_skills_file(new_agent)
-    _save_custom_agents()
+    for agent_id, content in defaults.items():
+        p = AGENTS_DIR / f"{agent_id}_skills.yaml"
+        if not p.exists():
+            try:
+                p.write_text(content, encoding="utf-8")
+                logger.info("Created default skills file: %s", p)
+            except Exception as e:
+                logger.warning("Could not write %s: %s", p, e)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def get_all_agents() -> List[Dict[str, Any]]:
+    return _get_all()
+
+
+def get_active_agents() -> List[Dict[str, Any]]:
+    return [a for a in _get_all() if a.get("active", True)]
+
+
+def add_agent(data: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+    agents = _load_agents()
+    role   = data.get("role", "").strip().lower()
+    for a in agents:
+        if a.get("role", "").strip().lower() == role:
+            return a, False  # duplicate
+    new_agent = {
+        "id":        data.get("id") or _make_id(data.get("role", "agent")),
+        "role":      data.get("role", "Agent"),
+        "label":     data.get("label") or data.get("role", "Agent"),
+        "goal":      data.get("goal", ""),
+        "backstory": data.get("backstory", ""),
+        "icon":      data.get("icon", "🤖"),
+        "color":     data.get("color", "#a78bfa"),
+        "active":    True,
+        "tools":     data.get("tools", ["web_search", "summariser"]),
+        "max_iter":  int(data.get("max_iter", DEFAULT_AGENTS[0].get("max_iter", 4))),
+        "created":   datetime.utcnow().isoformat(),
+    }
+    agents.append(new_agent)
+    _save_agents(agents)
     return new_agent, True
 
 
-def update_agent(agent_id: str, updates: dict) -> Optional[dict]:
-    new_role = updates.get("role","").strip()
-    if new_role:
-        conflict = find_agent_by_role(new_role)
-        if conflict and conflict["id"] != agent_id:
-            updates = {k:v for k,v in updates.items() if k != "role"}
-    for a in _agents:
+def update_agent(agent_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    agents = _load_agents()
+    for a in agents:
         if a["id"] == agent_id:
-            for k in ("role","goal","backstory","icon","color","label",
-                      "allow_delegation","max_iter","tools","active"):
-                if k in updates:
-                    a[k] = updates[k]
-            write_skills_file(a)
-            _save_custom_agents()
+            a.update(updates)
+            _save_agents(agents)
+            return a
+    # agent might be a default — persist an override
+    for defn in DEFAULT_AGENTS:
+        if defn["id"] == agent_id:
+            merged = {**defn, **updates}
+            agents.append(merged)
+            _save_agents(agents)
+            return merged
+    return None
+
+
+def remove_agent(agent_id: str) -> None:
+    agents = [a for a in _load_agents() if a["id"] != agent_id]
+    _save_agents(agents)
+
+
+def set_agent_active(agent_id: str, active: bool) -> None:
+    update_agent(agent_id, {"active": active})
+
+
+def role_exists(role: str) -> bool:
+    r = role.strip().lower()
+    return any(a.get("role", "").strip().lower() == r for a in _get_all())
+
+
+def find_agent_by_role(role: str) -> Optional[Dict[str, Any]]:
+    r = role.strip().lower()
+    for a in _get_all():
+        if a.get("role", "").strip().lower() == r:
             return a
     return None
 
 
-def remove_agent(agent_id: str) -> bool:
-    global _agents
-    before  = len(_agents)
-    _agents = [a for a in _agents if not (a["id"]==agent_id and not a.get("builtin"))]
-    changed = len(_agents) < before
-    if changed:
-        _save_custom_agents()
-    return changed
+def is_spawn_enabled() -> bool:
+    if SPAWN_CFG.exists():
+        try:
+            return json.loads(SPAWN_CFG.read_text()).get("enabled", True)
+        except Exception:
+            pass
+    return True
 
-
-def set_agent_active(agent_id: str, active: bool) -> Optional[dict]:
-    for a in _agents:
-        if a["id"] == agent_id:
-            a["active"] = active
-            write_skills_file(a)
-            _save_custom_agents()
-            return a
-    return None
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Spawn request queue
-# ─────────────────────────────────────────────────────────────────────────
 
 def request_spawn(requested_by: str, suggestion: dict) -> dict:
-    req = {"request_id": uuid.uuid4().hex[:8], "requested_by": requested_by,
-           "status": "pending", "suggestion": suggestion, "ts": time.time()}
-    _pending_spawns.append(req)
+    req = {
+        "request_id": str(uuid.uuid4())[:8],
+        "requested_by": requested_by,
+        "suggestion":   suggestion,
+        "ts":           datetime.utcnow().isoformat(),
+        "resolved":     False,
+        "approved":     None,
+    }
     return req
 
-def get_pending_spawns() -> list[dict]:
-    return [r for r in _pending_spawns if r["status"] == "pending"]
 
-def resolve_spawn(request_id: str, approved: bool) -> Optional[dict]:
-    for r in _pending_spawns:
-        if r["request_id"] == request_id:
-            if approved:
-                agent, created = add_agent(r["suggestion"])
-                if created:
-                    r["status"] = "approved"; r["agent_id"] = agent["id"]
-                else:
-                    r["status"] = "rejected"
-                    r["reason"] = f"Role '{agent['role']}' already exists."
-            else:
-                r["status"] = "rejected"
-            return r
-    return None
+def _make_id(role: str) -> str:
+    import re
+    s = re.sub(r"[^a-zA-Z0-9 _-]", "", role.strip().lower())
+    return re.sub(r"[ \-]+", "_", s).strip("_") or "agent"
