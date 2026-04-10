@@ -6,6 +6,9 @@ Fixes:
   - Uses CrewAI task callbacks to emit per-agent start/finish
   - broadcast_fn.result() called to ensure messages reach the WS loop
   - agent_working events emitted so 3D board room animates
+  - allow_delegation forced False to prevent coordinator hang in CrewAI 0.51
+  - step_callback handles both list and single-item signatures (CrewAI 0.51)
+  - Process.sequential enforced to avoid hierarchical manager LLM deadlock
 
 Exports:
     build_agents(mode)  — returns dict[agent_id, Agent]
@@ -17,7 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Any
 
-from crewai import Agent, Crew, Task
+from crewai import Agent, Crew, Task, Process
 from langchain_ollama import ChatOllama
 from model_config import get_llm_config
 from agent_registry import get_active_agents, read_skills_file
@@ -57,6 +60,12 @@ def build_agents(mode: str = "research") -> dict[str, Agent]:
     """
     Build a fresh dict of agent_id → CrewAI Agent.
     Merges SKILLS.md overrides, skips inactive agents.
+
+    FIX: allow_delegation is forced to False for ALL agents regardless of
+    registry or skills file setting.  In CrewAI 0.51 with Process.sequential,
+    allow_delegation=True on the coordinator causes it to attempt to delegate
+    to other agents via an internal manager LLM call that never resolves
+    (because there is no manager agent configured), hanging the entire job.
     """
     cfg = get_llm_config()
     llm = ChatOllama(**cfg)
@@ -69,10 +78,7 @@ def build_agents(mode: str = "research") -> dict[str, Agent]:
         role      = skills.get("role")      or defn["role"]
         goal      = skills.get("goal")      or defn["goal"]
         backstory = skills.get("backstory") or defn["backstory"]
-        max_iter  = skills.get("max_iter")  or int(defn.get("max_iter", 10))
-        allow_del = skills.get("allow_delegation")
-        if allow_del is None:
-            allow_del = defn.get("allow_delegation", False)
+        max_iter  = skills.get("max_iter")  or int(defn.get("max_iter", 8))
 
         skill_tools = skills.get("tools")
         reg_tools   = defn.get("tools")
@@ -92,15 +98,18 @@ def build_agents(mode: str = "research") -> dict[str, Agent]:
             tools            = tools,
             llm              = llm,
             verbose          = True,
-            allow_delegation = allow_del,
+            # CRITICAL FIX: always False in sequential mode.
+            # allow_delegation=True with Process.sequential causes CrewAI 0.51
+            # to hang waiting for an internal manager LLM that never responds.
+            allow_delegation = False,
             max_iter         = max_iter,
         )
     return agents
 
 
-# ─────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────
 # Broadcast helpers
-# ─────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────
 
 def _broadcast(broadcast_fn: Optional[Callable], msg: dict) -> None:
     """
@@ -159,9 +168,9 @@ def _emit_working(
     })
 
 
-# ─────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────
 # CrewAI step callback factory
-# ─────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────
 
 def _make_step_callback(
     broadcast_fn: Optional[Callable],
@@ -169,30 +178,35 @@ def _make_step_callback(
     label: str,
 ) -> Callable:
     """
-    Returns a callback compatible with CrewAI's step_callback.
+    Returns a callback compatible with CrewAI 0.51 step_callback.
     Called after every LLM step (thought, action, observation).
+
+    FIX: CrewAI 0.51 passes a LIST of step outputs to step_callback,
+    not a single object. Handle both list and single-object signatures.
     """
     def _cb(step_output: Any) -> None:
         try:
-            # step_output may be AgentFinish, AgentAction, or a string
-            if hasattr(step_output, "log"):
-                text = str(step_output.log).strip()
-            elif hasattr(step_output, "return_values"):
-                text = str(step_output.return_values.get("output", "")).strip()
-            elif hasattr(step_output, "text"):
-                text = str(step_output.text).strip()
-            else:
-                text = str(step_output).strip()
+            # CrewAI 0.51 passes a list; earlier versions pass a single object
+            items = step_output if isinstance(step_output, list) else [step_output]
+            for item in items:
+                if hasattr(item, "log"):
+                    text = str(item.log).strip()
+                elif hasattr(item, "return_values"):
+                    text = str(item.return_values.get("output", "")).strip()
+                elif hasattr(item, "text"):
+                    text = str(item.text).strip()
+                else:
+                    text = str(item).strip()
 
-            if not text:
-                return
+                if not text:
+                    continue
 
-            # Truncate very long thoughts for the feed
-            if len(text) > 300:
-                text = text[:297] + "…"
+                # Truncate very long thoughts for the feed
+                if len(text) > 300:
+                    text = text[:297] + "…"
 
-            _emit_working(broadcast_fn, agent_id, label, text)
-            _emit_activity(broadcast_fn, agent_id, label, text, phase=False)
+                _emit_working(broadcast_fn, agent_id, label, text)
+                _emit_activity(broadcast_fn, agent_id, label, text, phase=False)
         except Exception as exc:
             logger.debug("step_callback error: %s", exc)
 
@@ -205,7 +219,7 @@ def _make_task_callback(
     label: str,
 ) -> Callable:
     """
-    Returns a callback compatible with CrewAI's task callbacks.
+    Returns a callback compatible with CrewAI’s task callbacks.
     Called when a Task finishes.
     """
     def _cb(task_output: Any) -> None:
@@ -232,9 +246,9 @@ def _make_task_callback(
     return _cb
 
 
-# ─────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────
 # Main job runner
-# ─────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────
 
 def run_crew(
     topic: str,
@@ -282,8 +296,10 @@ def run_crew(
 
     task_descriptions: dict[str, str] = {
         "coordinator": (
-            f"You are the Coordinator. Plan and delegate research on the topic: '{topic}'.{file_context}\n"
-            "Identify the key research questions and ensure the final output is coherent and complete."
+            f"You are the Research Coordinator. Your job is to plan the research on: '{topic}'.{file_context}\n"
+            "Write a concise research plan outlining: (1) the key questions to investigate, "
+            "(2) the primary sources to consult, and (3) the expected structure of the final report. "
+            "Do NOT delegate. Do NOT ask for more information. Produce the plan directly."
         ),
         "researcher": (
             f"Research the topic: '{topic}'.{file_context}\n"
@@ -302,7 +318,7 @@ def run_crew(
         ),
     }
 
-    # ── Query mode: single agent fast path ────────────────────────────────
+    # ── Query mode: single agent fast path ──────────────────────────────────────
     if mode == "query":
         agent_id = next(iter(agents_map))
         agent    = agents_map[agent_id]
@@ -320,6 +336,7 @@ def run_crew(
         crew = Crew(
             agents=[agent],
             tasks=[task],
+            process=Process.sequential,
             step_callback=_make_step_callback(broadcast_fn, agent_id, label),
             verbose=True,
         )
@@ -331,7 +348,7 @@ def run_crew(
         _emit_activity(broadcast_fn, agent_id, label, "✅ Done", task_result=True)
         return result_text, report_filename, "md", 0, 0
 
-    # ── Full pipeline ──────────────────────────────────────────────────────
+    # ── Full pipeline ────────────────────────────────────────────────────────
     available_ids = list(agents_map.keys())
     phase_ids     = [p for p in PHASE_ORDER if p in available_ids]
     extra_ids     = [a for a in available_ids if a not in PHASE_ORDER]
@@ -368,37 +385,44 @@ def run_crew(
     _current: Dict[str, Any] = {"aid": ordered_ids[0] if ordered_ids else ""}
 
     def _crew_step_callback(step_output: Any) -> None:
-        """Called by CrewAI after every LLM step across all agents."""
-        # Try to figure out which agent produced this step
+        """
+        Called by CrewAI after every LLM step across all agents.
+
+        FIX: CrewAI 0.51 passes a LIST to step_callback, not a single object.
+        Unwrap the list before processing.
+        """
         aid = _current["aid"]
-        try:
-            if hasattr(step_output, "agent") and step_output.agent:
-                aid = str(step_output.agent)
-                _current["aid"] = aid
-        except Exception:
-            pass
+        # Unwrap list (CrewAI 0.51 wraps steps in a list)
+        items = step_output if isinstance(step_output, list) else [step_output]
+        for item in items:
+            try:
+                if hasattr(item, "agent") and item.agent:
+                    aid = str(item.agent)
+                    _current["aid"] = aid
+            except Exception:
+                pass
 
-        label = _label(aid)
+            label = _label(aid)
 
-        try:
-            if hasattr(step_output, "log"):
-                text = str(step_output.log).strip()
-            elif hasattr(step_output, "return_values"):
-                text = str(step_output.return_values.get("output", "")).strip()
-            elif hasattr(step_output, "text"):
-                text = str(step_output.text).strip()
-            else:
-                text = str(step_output).strip()
+            try:
+                if hasattr(item, "log"):
+                    text = str(item.log).strip()
+                elif hasattr(item, "return_values"):
+                    text = str(item.return_values.get("output", "")).strip()
+                elif hasattr(item, "text"):
+                    text = str(item.text).strip()
+                else:
+                    text = str(item).strip()
 
-            if not text:
-                return
-            if len(text) > 300:
-                text = text[:297] + "…"
+                if not text:
+                    continue
+                if len(text) > 300:
+                    text = text[:297] + "…"
 
-            _emit_working(broadcast_fn, aid, label, text)
-            _emit_activity(broadcast_fn, aid, label, text, phase=False)
-        except Exception as exc:
-            logger.debug("crew step_callback error: %s", exc)
+                _emit_working(broadcast_fn, aid, label, text)
+                _emit_activity(broadcast_fn, aid, label, text, phase=False)
+            except Exception as exc:
+                logger.debug("crew step_callback error: %s", exc)
 
     # Emit working state for first agent before kickoff
     if ordered_ids:
@@ -411,9 +435,15 @@ def run_crew(
         )
         _emit_working(broadcast_fn, first_aid, first_label, "Thinking…")
 
+    # FIX: Always use Process.sequential.
+    # The default (hierarchical) process requires a manager_llm to be
+    # configured on the Crew. Without it, CrewAI 0.51 silently hangs
+    # after the first agent emits its plan, waiting for manager approval
+    # that never arrives.
     crew = Crew(
         agents=agent_list,
         tasks=tasks,
+        process=Process.sequential,
         step_callback=_crew_step_callback,
         verbose=True,
     )
