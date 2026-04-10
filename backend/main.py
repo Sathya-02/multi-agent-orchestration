@@ -71,18 +71,39 @@ except Exception as e:
 # ---------------------------------------------------------------------------
 # Optional Filesystem config
 # ---------------------------------------------------------------------------
+# fs_config uses module-level functions — no FSConfig class exists.
+# We import the real functions and add thin helpers to match endpoint usage.
+# ---------------------------------------------------------------------------
 try:
+    import fs_config as _fs_mod
     from fs_config import (
-        FSConfig,
-        get_fs_config,
-        save_fs_config,
+        get_audit_log,
+        get_output_dir,
+        set_output_dir,
+        get_access_list,
         add_access_entry,
         remove_access_entry,
-        update_access_flag,
-        get_audit_log,
-        set_output_dir,
-        check_access,
+        update_access_entry,
+        can_read,
+        can_write,
     )
+
+    def get_fs_config() -> dict:
+        """Return the FS config dict expected by /fs-config endpoints."""
+        return {"access_list": get_access_list(), "output_dir": get_output_dir()}
+
+    def save_fs_config(cfg: dict) -> None:
+        """No-op placeholder — fs_config is settings-driven."""
+        pass
+
+    def update_access_flag(path: str, flag: str, value: bool) -> None:
+        """Delegate flag update to update_access_entry."""
+        update_access_entry(path, **{flag: value})
+
+    def check_access(path: str, agent: str = "agent") -> dict:
+        ok, msg = can_read(path, agent)
+        return {"allowed": ok, "reason": msg}
+
     FS_ENABLED = True
 except Exception as e:
     logger.warning(f"FS config not available: {e}")
@@ -91,9 +112,39 @@ except Exception as e:
 # ---------------------------------------------------------------------------
 # Optional Tool registry
 # ---------------------------------------------------------------------------
+# tool_registry uses module-level functions — no ToolRegistry class exists.
+# _ToolRegistryAdapter wraps them with the OO interface expected by endpoints.
+# ---------------------------------------------------------------------------
 try:
-    from tool_registry import ToolRegistry
-    tool_registry = ToolRegistry(TOOL_DIR)
+    import tool_registry as _tr
+
+    class _ToolRegistryAdapter:
+        def list_tools(self):
+            return _tr.get_all_tools()
+
+        def create_tool(self, d: dict):
+            tool, created = _tr.add_tool(d)
+            if not created:
+                tool["duplicate"] = True
+            return tool
+
+        def update_tool(self, tid: str, updates: dict):
+            return _tr.update_tool(tid, updates) or {}
+
+        def delete_tool(self, tid: str):
+            _tr.remove_tool(tid)
+
+        def set_active(self, tid: str, val: bool):
+            _tr.set_tool_active(tid, val)
+
+        def get_tool_md(self, tid: str) -> str:
+            return _tr.get_tool_md_text(tid)
+
+        def save_tool_md(self, tid: str, text: str):
+            _tr.save_tool_md_text(tid, text)
+
+    tool_registry = _ToolRegistryAdapter()
+    _tr.ensure_tool_files()
     TOOLS_ENABLED = True
 except Exception as e:
     logger.warning(f"Tool registry not available: {e}")
@@ -103,9 +154,39 @@ except Exception as e:
 # ---------------------------------------------------------------------------
 # Optional Agent registry
 # ---------------------------------------------------------------------------
+# agent_registry uses module-level functions — no AgentRegistry class exists.
+# _AgentRegistryAdapter wraps them with the OO interface expected by endpoints.
+# ---------------------------------------------------------------------------
 try:
-    from agent_registry import AgentRegistry
-    agent_registry = AgentRegistry(AGENT_DIR)
+    import agent_registry as _ar
+
+    class _AgentRegistryAdapter:
+        def list_agents(self):
+            return _ar.get_all_agents()
+
+        def create_agent(self, d: dict):
+            agent, created = _ar.add_agent(d)
+            if not created:
+                agent["duplicate"] = True
+            return agent
+
+        def update_agent(self, aid: str, updates: dict):
+            return _ar.update_agent(aid, updates) or {}
+
+        def delete_agent(self, aid: str):
+            _ar.remove_agent(aid)
+
+        def set_active(self, aid: str, val: bool):
+            _ar.set_agent_active(aid, val)
+
+        def get_skills(self, aid: str) -> str:
+            return _ar.get_skills_text(aid)
+
+        def save_skills(self, aid: str, text: str):
+            _ar.save_skills_text(aid, text)
+
+    agent_registry = _AgentRegistryAdapter()
+    _ar.ensure_skills_files()
     AGENTS_ENABLED = True
 except Exception as e:
     logger.warning(f"Agent registry not available: {e}")
@@ -115,9 +196,39 @@ except Exception as e:
 # ---------------------------------------------------------------------------
 # Optional Self-improver
 # ---------------------------------------------------------------------------
+# self_improver uses module-level functions — no SelfImprover class exists.
+# _SelfImproverAdapter wraps them with the OO interface expected by endpoints.
+# ---------------------------------------------------------------------------
 try:
-    from self_improver import SelfImprover
-    self_improver = SelfImprover(BASE_DIR)
+    import self_improver as _si
+
+    class _SelfImproverAdapter:
+        _BASE = Path(__file__).parent
+
+        def get_config(self) -> dict:
+            return _si.load_config()
+
+        def save_config(self, cfg: dict):
+            current = _si.load_config()
+            current.update(cfg)
+            _si.save_config(current)
+
+        def run_cycle(self):
+            return _si.trigger_improvement_cycle()
+
+        def get_best_practices(self) -> str:
+            p = self._BASE / "BEST_PRACTICES.md"
+            return p.read_text(encoding="utf-8") if p.exists() else ""
+
+        def get_proposals(self) -> str:
+            p = self._BASE / "IMPROVEMENT_PROPOSALS.md"
+            return p.read_text(encoding="utf-8") if p.exists() else ""
+
+        def get_log(self) -> str:
+            p = self._BASE / "IMPROVEMENT_LOG.md"
+            return p.read_text(encoding="utf-8") if p.exists() else ""
+
+    self_improver = _SelfImproverAdapter()
     SI_ENABLED = True
 except Exception as e:
     logger.warning(f"Self-improver not available: {e}")
@@ -127,9 +238,29 @@ except Exception as e:
 # ---------------------------------------------------------------------------
 # Optional Web Search
 # ---------------------------------------------------------------------------
+# web_search_tool uses module-level functions — no WebSearchTool class exists.
+# _WebSearchAdapter wraps them with the OO interface expected by endpoints.
+# ---------------------------------------------------------------------------
 try:
-    from web_search_tool import WebSearchTool
-    web_search = WebSearchTool()
+    import web_search_tool as _wst
+
+    class _WebSearchAdapter:
+        def get_config(self) -> dict:
+            return _wst.load_config()
+
+        def save_config(self, cfg: dict):
+            _wst.save_config(cfg)
+
+        async def test_providers(self) -> dict:
+            try:
+                return _wst.test_search()
+            except Exception as ex:
+                return {"error": str(ex)}
+
+        async def search(self, q: str) -> str:
+            return _wst.real_search(q)
+
+    web_search = _WebSearchAdapter()
     WS_ENABLED = True
 except Exception as e:
     logger.warning(f"Web search not available: {e}")
@@ -139,8 +270,50 @@ except Exception as e:
 # ---------------------------------------------------------------------------
 # Optional Telegram
 # ---------------------------------------------------------------------------
+# telegram_bot uses module-level functions — no TelegramBot class exists.
+# TelegramBot adapter provides static load_config/save_config and instance
+# send_message() so that existing endpoint code works unchanged.
+# ---------------------------------------------------------------------------
 try:
-    from telegram_bot import TelegramBot
+    import telegram_bot as _tgb
+    from telegram_bot import (
+        save_config as _tg_save_config,
+        is_enabled as _tg_is_enabled,
+        notify_message as _tg_notify,
+    )
+
+    class TelegramBot:
+        """Thin adapter — wraps module-level telegram_bot functions."""
+
+        _CFG_PATH = Path(__file__).parent / "data" / "telegram_config.json"
+
+        @staticmethod
+        def load_config(base_dir=None) -> dict:
+            p = TelegramBot._CFG_PATH
+            if p.exists():
+                try:
+                    return json.loads(p.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            return {
+                "token": "",
+                "allowed_chats": [],
+                "notify_chat": "",
+                "enabled": False,
+            }
+
+        @staticmethod
+        def save_config(base_dir, cfg: dict):
+            p = TelegramBot._CFG_PATH
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+
+        def __init__(self, cfg: dict = None):
+            self._cfg = cfg or {}
+
+        async def send_message(self, text: str):
+            _tg_notify(text)
+
     TELEGRAM_ENABLED = True
 except Exception as e:
     logger.warning(f"Telegram bot not available: {e}")
@@ -149,26 +322,55 @@ except Exception as e:
 # ---------------------------------------------------------------------------
 # Optional Model config
 # ---------------------------------------------------------------------------
+# model_config uses module-level functions — no ModelConfig class exists.
+# Import the three functions directly; fall back to simple stubs if unavailable.
+# ---------------------------------------------------------------------------
 try:
-    from model_config import ModelConfig
-    model_config = ModelConfig(BASE_DIR)
+    from model_config import get_active_model, set_active_model, get_llm_config
     MODEL_CONFIG_ENABLED = True
 except Exception as e:
     logger.warning(f"Model config not available: {e}")
     MODEL_CONFIG_ENABLED = False
-    model_config = None
+
+    def get_active_model() -> str:
+        return os.environ.get("DEFAULT_MODEL", "phi3:mini")
+
+    def set_active_model(model: str) -> None:
+        pass
+
+    def get_llm_config() -> dict:
+        return {}
 
 # ---------------------------------------------------------------------------
 # Optional settings
 # ---------------------------------------------------------------------------
+# settings.py exposes module-level constants — no Settings class exists.
+# Import the constants we need; fall back to sensible defaults if unavailable.
+# ---------------------------------------------------------------------------
 try:
-    from settings import Settings
-    settings_obj = Settings(BASE_DIR)
+    import settings as _settings_mod
+    from settings import (
+        ensure_dirs,
+        REPORTS_DIR as _SETTINGS_REPORTS_DIR,
+        UPLOADS_DIR as _SETTINGS_UPLOADS_DIR,
+        KB_DIR as _SETTINGS_KB_DIR,
+        OLLAMA_MODEL,
+        OLLAMA_URL,
+        SEARCH_ENABLED,
+        RAG_ENABLED as _SETTINGS_RAG_ENABLED,
+        TELEGRAM_ENABLED as _SETTINGS_TG_ENABLED,
+        SELF_IMPROVER_ENABLED,
+        FILESYSTEM_ENABLED,
+        STATS_ENABLED,
+        REQUIRE_API_KEY,
+        JOB_TIMEOUT_SECONDS,
+    )
     SETTINGS_ENABLED = True
 except Exception as e:
     logger.warning(f"Settings not available: {e}")
     SETTINGS_ENABLED = False
-    settings_obj = None
+    OLLAMA_MODEL = os.environ.get("DEFAULT_MODEL", "phi3:mini")
+    OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 
 # ---------------------------------------------------------------------------
 # Auth (simple bearer token, optional)
@@ -805,16 +1007,16 @@ def kb_update_config(body: KBConfigUpdate, current_user=_auth_dep):
     if not RAG_ENABLED:
         raise HTTPException(status_code=404, detail="RAG disabled")
     cfg = load_kb_config()
-    if body.enabled     is not None: cfg["enabled"]      = body.enabled
-    if body.chunk_size  is not None: cfg["chunk_size"]   = body.chunk_size
-    if body.chunk_overlap is not None: cfg["chunk_overlap"] = body.chunk_overlap
-    if body.top_k    is not None: cfg["top_k"]       = body.top_k
-    if body.min_score is not None: cfg["min_score"]  = body.min_score
-    if body.embed_model is not None: cfg["embed_model"] = body.embed_model
+    if body.enabled       is not None: cfg["enabled"]       = body.enabled
+    if body.chunk_size    is not None: cfg["chunk_size"]     = body.chunk_size
+    if body.chunk_overlap is not None: cfg["chunk_overlap"]  = body.chunk_overlap
+    if body.top_k         is not None: cfg["top_k"]          = body.top_k
+    if body.min_score     is not None: cfg["min_score"]      = body.min_score
+    if body.embed_model   is not None: cfg["embed_model"]    = body.embed_model
     save_kb_config(cfg)
     return cfg
 
-# FIX: Route changed from /kb/ingest/text to /kb/ingest-text to match frontend calls
+
 @app.post("/kb/ingest-text")
 def kb_ingest_text_endpoint(body: KBIngestText, current_user=_auth_dep):
     if not RAG_ENABLED:
@@ -822,8 +1024,7 @@ def kb_ingest_text_endpoint(body: KBIngestText, current_user=_auth_dep):
     count = ingest_text(body.text, source=body.source, tags=body.tags)
     return {"chunks_added": count}
 
-# FIX: Route changed from /kb/ingest/file to /kb/ingest-file to match frontend calls
-# Frontend App.jsx calls: fetch(APIURL + "kb/ingest-file", {method: "POST", body: fd})
+
 @app.post("/kb/ingest-file")
 async def kb_ingest_file(file: UploadFile = File(...), current_user=_auth_dep):
     if not RAG_ENABLED:
@@ -833,6 +1034,7 @@ async def kb_ingest_file(file: UploadFile = File(...), current_user=_auth_dep):
         shutil.copyfileobj(file.file, fh)
     count = ingest_file(dest)
     return {"filename": file.filename, "chunks_added": count}
+
 
 @app.delete("/kb/entries/{entry_id}")
 def kb_delete_entry(entry_id: str, current_user=_auth_dep):
@@ -906,7 +1108,7 @@ def get_fs_audit(current_user=_auth_dep):
 async def add_fs_access(body: FSAccessEntry, current_user=_auth_dep):
     if not FS_ENABLED:
         raise HTTPException(status_code=404, detail="FS config disabled")
-    result = add_access_entry(body.dict())
+    result = add_access_entry(body.path, read=body.read, write=body.write)
     await broadcast({"type": "fs_config_updated", "config": get_fs_config()})
     return result
 
