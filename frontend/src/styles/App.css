@@ -189,20 +189,22 @@ body{
   box-shadow: 0 0 12px rgba(99,102,241,0.4);
 }
 
-/* ═══ 3D BOARD ROOM - 40% width overlay ═══ */
+/* 3D BOARD ROOM - right-side split pane */
 .canvas-area {
   position: fixed;
-  top: 94px;
-  left: 0;
-  width: 40vw;
+  top: 94px; /* header (52) + info bar (42) */
+  right: 0;
+  left: auto;
+  width: min(40vw, 520px);               /* right pane, capped width */
   height: calc(100vh - 94px);
   background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-  border-right: 2px solid rgba(99,102,241,0.25);
+  border-left: 2px solid rgba(99,102,241,0.25);
   z-index: 100;
   overflow: hidden;
-  box-shadow: 4px 0 24px rgba(0,0,0,0.5);
+  box-shadow: -4px 0 24px rgba(0,0,0,0.55);
   display: flex;
   flex-direction: column;
+  backdrop-filter: blur(12px);
 }
 
 .canvas-header {
@@ -242,6 +244,8 @@ body{
   flex: 1;
   position: relative;
   background: #e8ecf0;
+  max-height: 100%;
+  overflow: hidden;
 }
 
 .phase-bar {
@@ -299,8 +303,10 @@ body{
 }
 
 .main-content.canvas-open {
-  margin-left: 40vw;
-  width: 60vw;
+  /* leave room on the right for the 3D boardroom */
+  margin-right: min(40vw, 520px);
+  width: auto;
+  transition: margin-right 0.3s ease, width 0.3s ease;
 }
 
 /* Mode section */
