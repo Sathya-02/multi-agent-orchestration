@@ -7,6 +7,7 @@ Includes: MockSearchTool, DataAnalysisTool, SummaryTool,
 """
 from langchain.tools import BaseTool
 from typing import Any
+import sys
 import time, random, json, math, re
 from pathlib import Path
 
@@ -21,6 +22,23 @@ def to_str(data: Any) -> str:
                 return str(data[key])
         return json.dumps(data)
     return str(data) if data else ""
+
+
+def _sync_broadcast(msg: dict) -> None:
+    """
+    Safe late-binding wrapper for main.sync_broadcast.
+
+    Uses sys.modules instead of 'import main' to avoid the circular-import /
+    partial-initialisation race where main is not yet fully loaded when tools.py
+    is first imported.  By the time any tool's _run() is actually called the
+    main module is always fully initialised, so sys.modules['main'] is safe.
+    """
+    _main = sys.modules.get("main")
+    if _main is None:
+        return  # main not loaded yet — drop the message silently
+    fn = getattr(_main, "sync_broadcast", None)
+    if callable(fn):
+        fn(msg)
 
 
 # ── Web search — real or mock depending on config ────────────────────────
@@ -238,7 +256,6 @@ class SpawnAgentTool(BaseTool):
         from agent_registry import (
             is_spawn_enabled, role_exists, find_agent_by_role, request_spawn,
         )
-        import main as _main
 
         # ── Check 1: spawn toggle ─────────────────────────────────────────
         if not is_spawn_enabled():
@@ -269,7 +286,7 @@ class SpawnAgentTool(BaseTool):
         # ── Submit spawn request ──────────────────────────────────────────
         req = request_spawn(requested_by="agent", suggestion=data)
 
-        _main.sync_broadcast({
+        _sync_broadcast({
             "type":       "spawn_request",
             "request_id": req["request_id"],
             "suggestion": data,
@@ -303,7 +320,6 @@ class SpawnToolTool(BaseTool):
         from tool_registry import (
             name_exists, find_tool_by_name, request_tool_spawn,
         )
-        import main as _main
 
         raw = to_str(suggestion or kwargs)
         try:
@@ -325,7 +341,7 @@ class SpawnToolTool(BaseTool):
 
         req = request_tool_spawn(requested_by="agent", suggestion=data)
 
-        _main.sync_broadcast({
+        _sync_broadcast({
             "type":          "tool_spawn_request",
             "request_id":    req["request_id"],
             "suggestion":    data,
