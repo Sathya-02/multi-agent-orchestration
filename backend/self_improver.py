@@ -475,6 +475,66 @@ def _init_best_practices() -> None:
             encoding="utf-8",
         )
 
+# ─────────────────────────────────────────────────────────────────────────
+# Public API
+# ─────────────────────────────────────────────────────────────────────────
+
+def trigger_improvement_cycle() -> None:
+    """
+    Manually trigger one improvement cycle in a background thread.
+    Called by POST /self-improver/run-now from main.py.
+    """
+    global _running
+    if _running:
+        logger.info("Self-improver already running — skipping trigger.")
+        return
+
+    def _run():
+        global _running
+        _running = True
+        try:
+            results = _run_improvement_cycle()
+            logger.info(f"Manual improvement cycle complete: {results}")
+        except Exception as e:
+            logger.exception(f"Self-improver cycle failed: {e}")
+        finally:
+            _running = False
+
+    t = threading.Thread(target=_run, daemon=True, name="self-improver-manual")
+    t.start()
+
+
+def start_scheduler() -> None:
+    """
+    Start the background scheduler thread that runs the improvement
+    cycle every `interval_hours` hours. Call once from main.py startup.
+    """
+    global _thread
+
+    def _loop():
+        global _running
+        while True:
+            cfg = load_config()
+            if not cfg.get("enabled", True):
+                time.sleep(300)
+                continue
+            interval = int(cfg.get("interval_hours", 6)) * 3600
+            time.sleep(interval)
+            if _running:
+                continue
+            _running = True
+            try:
+                results = _run_improvement_cycle()
+                logger.info(f"Scheduled improvement cycle complete: {results}")
+            except Exception as e:
+                logger.exception(f"Scheduled self-improver cycle failed: {e}")
+            finally:
+                _running = False
+
+    if _thread is None or not _thread.is_alive():
+        _thread = threading.Thread(target=_loop, daemon=True, name="self-improver-scheduler")
+        _thread.start()
+        logger.info("Self-improver scheduler started.")
 
 # Run init when module is imported
 _init_best_practices()

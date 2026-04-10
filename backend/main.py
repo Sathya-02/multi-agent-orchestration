@@ -726,6 +726,57 @@ def update_self_improver_config(body: dict, current_user=_auth_dep):
     SELF_IMPROVER_CFG_FILE.write_text(json.dumps(body, indent=2))
     return {"ok": True}
 
+@app.post("/self-improver/config")
+def save_self_improver_config(body: dict, current_user=_auth_dep):
+    if not SELF_IMPROVER_ENABLED:
+        raise HTTPException(status_code=404, detail="Self-improver disabled")
+    from settings import SELF_IMPROVER_CFG_FILE
+    SELF_IMPROVER_CFG_FILE.write_text(json.dumps(body, indent=2))
+    return {"ok": True}
+
+@app.post("/self-improver/run-now")
+def run_self_improver_now(current_user=_auth_dep):
+    if not SELF_IMPROVER_ENABLED:
+        raise HTTPException(status_code=404, detail="Self-improver disabled")
+    try:
+        from self_improver import trigger_improvement_cycle
+        trigger_improvement_cycle()
+    except Exception:
+        pass  # fire-and-forget; module may not be wired yet
+    return {"ok": True, "message": "Self-improvement cycle triggered"}
+
+
+@app.get("/self-improver/best-practices")
+def get_best_practices(current_user=_auth_dep):
+    if not SELF_IMPROVER_ENABLED:
+        raise HTTPException(status_code=404, detail="Self-improver disabled")
+    from settings import BASE_DIR
+    bp_file = BASE_DIR / "data" / "best_practices.md"
+    if bp_file.exists():
+        return {"content": bp_file.read_text()}
+    return {"content": "# Best Practices\n\nNo best practices recorded yet."}
+
+
+@app.get("/self-improver/proposals")
+def get_proposals(current_user=_auth_dep):
+    if not SELF_IMPROVER_ENABLED:
+        raise HTTPException(status_code=404, detail="Self-improver disabled")
+    from settings import BASE_DIR
+    proposals_file = BASE_DIR / "data" / "improvement_proposals.md"
+    if proposals_file.exists():
+        return {"content": proposals_file.read_text()}
+    return {"content": "No proposals yet."}
+
+
+@app.get("/self-improver/log")
+def get_improver_log(current_user=_auth_dep):
+    if not SELF_IMPROVER_ENABLED:
+        raise HTTPException(status_code=404, detail="Self-improver disabled")
+    from settings import BASE_DIR
+    log_file = BASE_DIR / "data" / "improvement_log.md"
+    if log_file.exists():
+        return {"content": log_file.read_text()}
+    return {"content": "No improvement log yet."}
 
 # ══════════════════════════════════════════════════════════════════════════
 # WEB SEARCH CONFIG  /web-search/config
