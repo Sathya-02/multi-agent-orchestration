@@ -197,8 +197,8 @@ export default function App() {
   }, [])
 
   /* ── Helpers ──────────────────────────────────────────── */
-  const addLog = (agent, label, message, phase = false, ts = null, taskResult = false) =>
-  setLogs(prev => {
+  const addLog = useCallback((agent, label, message, phase = false, ts = null, taskResult = false) =>
+  setLogs(prev => { 
     const last = prev[prev.length - 1]
     // If the last entry is from the same agent with the same message, skip it
     if (last && last.agent === agent && last.message === message) {
@@ -215,7 +215,7 @@ export default function App() {
         ts: ts || Date.now() / 1000,
       },
     ]
-  })
+   }), [])
 
   const fetchModels = async () => {
     try {
@@ -713,7 +713,7 @@ export default function App() {
         msg.type === 'tool_deleted' || msg.type === 'tools_updated') {
       fetchTools()
     }
-  }, [currentModel])
+  }, [currentModel, addLog])
 
   /* ── Model actions ────────────────────────────────────── */
   const handleModelChange = async () => {
@@ -918,6 +918,17 @@ const handleOpenSkills = async (agent) => {
             onClick={() => { setShowSettings(v=>!v); if(!showSettings){fetchTelegramConfig();fetchSiConfig();fetchBestPractices();fetchProposals()} setShowDashboard(false); setShowUploadPanel(false); setShowAgentEditor(false); setShowToolPanel(false); setShowFsPanel(false); setShowModelPanel(false) }}>
             ⚙️ Settings
           </button>
+          <button className="model-badge"
+            onClick={() => { setShowModelPanel(v=>!v); setShowDashboard(false); setShowUploadPanel(false); setShowAgentEditor(false); fetchModels() }}
+            style={{'--badge-color': modelBadgeColor()}} title="Change model">
+            <span className="model-dot"/>
+            {currentModel}
+            <span className="model-chevron">{showModelPanel?'▲':'▼'}</span>
+          </button>
+          <div style={{width:1,height:16,background:'rgba(99,102,241,0.3)',margin:'0 6px'}}/>
+          <div className={`status-dot ${connected?'':'inactive'}`}/>
+          {connected?'Connected':'Connecting…'}
+          {jobId && <span style={{marginLeft:8,color:'#6366f1',fontSize:11}}>Job #{jobId}</span>}
         </div>
       </header>
 
@@ -2392,10 +2403,12 @@ const handleOpenSkills = async (agent) => {
 
       {/* ── 3D Canvas ─────────────────────────────────────── */}
       {show3DRoom && (
-        <div className="canvas-area">
-          <div className="canvas-label">Agent Office · Drag to orbit · Scroll to zoom</div>
-          {running && (
-            <div className="phase-bar">
+           <div className="canvas-area">
+            <div className="canvas-header">
+              <span className="canvas-label">🏛️ Agent Office · Drag to orbit · Scroll to zoom</span>
+              <button className="canvas-close-btn" onClick={() => setShow3DRoom(false)}>✕ Close</button>
+            </div>
+            {running && <div className="phase-bar">
               {PHASE_ORDER.map((p,i) => {
                 const m = PHASE_META[p] || { icon:'🤖', name:p }
                 const active = currentPhase===p, done=currentPhaseIndex>i
@@ -2407,12 +2420,13 @@ const handleOpenSkills = async (agent) => {
                   </div>
                 )
               })}
+              </div>}
+            <div className="canvas-3d-wrapper">
+              <AgentScene3D activeAgent={activeAgent} agents={agents}
+                lastMessages={lastMessages} currentPhase={currentPhase}
+                currentWorker={currentWorker}/>
             </div>
-          )}
-          <AgentScene3D activeAgent={activeAgent} agents={agents}
-            lastMessages={lastMessages} currentPhase={currentPhase}
-            currentWorker={currentWorker}/>
-        </div>
+          </div>
       )}
 
       {/* ── Side Panel ────────────────────────────────────── */}
