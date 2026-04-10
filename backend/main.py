@@ -642,7 +642,6 @@ def get_stats(current_user=_auth_dep):
         "disk_used_gb": disk_used_gb,
         "disk_total_gb": disk_total_gb,
         "disk_pct": disk_pct,
-        "cpu_pct": cpu,
         "active_jobs": len([j for j in active_jobs.values() if j.get("status") == "running"]),
         "total_jobs": len(active_jobs),
         "tokens_in": tokens_in,
@@ -736,6 +735,13 @@ async def run_job(
         }
     )
 
+    # FIX: Capture the running event loop HERE (in the async context),
+    # BEFORE entering the executor thread where get_event_loop() would
+    # return the wrong loop (or raise DeprecationWarning in Python 3.10+).
+    # This is the root cause of the activity feed and 3D boardroom not
+    # receiving any WebSocket messages during crew execution.
+    _loop = asyncio.get_event_loop()
+
     async def _run():
         global tokens_in, tokens_out, tokens_last
         try:
@@ -753,7 +759,7 @@ async def run_job(
                     agent_dir=AGENT_DIR,
                     tool_dir=TOOL_DIR,
                     broadcast_fn=lambda msg: asyncio.run_coroutine_threadsafe(
-                        broadcast(msg), asyncio.get_event_loop()
+                        broadcast(msg), _loop
                     ),
                     spawn_requests=spawn_requests,
                     spawn_enabled=spawn_enabled,
