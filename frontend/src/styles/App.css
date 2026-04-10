@@ -1,4 +1,5 @@
 /* Reset */
+<<<<<<< HEAD
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
 :root{
@@ -1266,3 +1267,6 @@ body{
   50% { opacity: 0.3; }
 }
 .blink { animation: blink 1s infinite; }
+=======
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+>>>>>>> 679f525642b73abcf6c1c7087e7787237878ebbc
