@@ -10,9 +10,12 @@ Fix history:
   6. OTEL_SDK_DISABLED + CREWAI_DISABLE_TELEMETRY set in main.py before
      any crewai import so crew.kickoff() doesn't open an HTTP span to
      telemetry.crewai.com:4319 (which times out ~10 s offline)
-  7. _broadcast is fire-and-forget — removed fut.result(timeout=2) which
-     blocked the worker thread 2 s per message (10+ s total freeze before
-     kickoff was ever called)
+  7. _broadcast is fire-and-forget — removed fut.result(timeout=2)
+  8. coordinator + all roles now include summariser so the LLM can always
+     produce a Final Answer without looping on tool calls indefinitely.
+     max_iter reduced 8→5 so a stuck agent times out faster.
+     ChatOllama num_ctx=4096 + num_predict=1024 prevent silent hangs caused
+     by the model waiting for more context or producing unbounded tokens.
 """
 import logging
 import time
@@ -30,12 +33,21 @@ from fs_tools import FSReadTool, FSWriteTool, FSEditTool, FSListTool
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Tool lists per role
+# ---------------------------------------------------------------------------
+# IMPORTANT: Every role MUST include 'summariser' so the LLM always has
+# a tool it can call to produce a Final Answer.  Without it the agent
+# loops on web_search until max_iter is exhausted.
 ROLE_TOOLS: dict[str, list[str]] = {
-    "coordinator": ["web_search", "request_new_agent"],
-    "researcher":  ["web_search", "knowledge_base_search", "summariser", "read_uploaded_file", "calculator"],
-    "analyst":     ["data_analyser", "knowledge_base_search", "summariser", "read_uploaded_file", "calculator"],
-    "writer":      ["summariser"],
-    "fs_agent":    ["fs_read_file", "fs_list_dir", "fs_write_file", "fs_edit_file"],
+    "coordinator": ["web_search", "summariser", "request_new_agent"],
+    "researcher":  ["web_search", "knowledge_base_search", "summariser",
+                    "read_uploaded_file", "calculator"],
+    "analyst":     ["data_analyser", "knowledge_base_search", "summariser",
+                    "read_uploaded_file", "calculator"],
+    "writer":      ["summariser", "read_uploaded_file"],
+    "fs_agent":    ["fs_read_file", "fs_list_dir", "fs_write_file", "fs_edit_file",
+                    "summariser"],
 }
 DEFAULT_TOOLS = ["web_search", "summariser", "read_uploaded_file", "calculator"]
 
@@ -48,24 +60,40 @@ FS_TOOL_MAP = {
 
 PHASE_ORDER = ["coordinator", "researcher", "analyst", "writer"]
 
+# Default max_iter — lower is faster to fail-safe when the LLM loops.
+# 8 iterations × ~20 s per Ollama call = 160 s frozen before giving up.
+# 4 iterations × ~20 s = 80 s — still generous but snappier.
+DEFAULT_MAX_ITER = 4
+
 
 def build_agents(mode: str = "research") -> dict[str, Agent]:
-    cfg = get_llm_config()
-    llm = ChatOllama(**cfg)
+    base_cfg = get_llm_config()
+
+    # Ensure safe context / generation limits so Ollama never silently hangs
+    # waiting for more input or emitting an unbounded stream.
+    base_cfg.setdefault("num_ctx", 4096)      # context window
+    base_cfg.setdefault("num_predict", 1024)  # max tokens to generate
+    base_cfg.setdefault("temperature", 0.2)   # more deterministic = fewer loop-backs
+
+    llm = ChatOllama(**base_cfg)
 
     agents = {}
     for defn in get_active_agents():
         aid = defn["id"]
 
-        skills    = read_skills_file(aid) or {}
-        role      = skills.get("role")      or defn["role"]
-        goal      = skills.get("goal")      or defn["goal"]
-        backstory  = skills.get("backstory") or defn["backstory"]
-        max_iter  = skills.get("max_iter")  or int(defn.get("max_iter", 8))
+        skills   = read_skills_file(aid) or {}
+        role     = skills.get("role")      or defn["role"]
+        goal     = skills.get("goal")      or defn["goal"]
+        backstory = skills.get("backstory") or defn["backstory"]
+        max_iter = int(skills.get("max_iter") or defn.get("max_iter") or DEFAULT_MAX_ITER)
 
         skill_tools = skills.get("tools")
         reg_tools   = defn.get("tools")
         tool_names  = skill_tools or reg_tools or ROLE_TOOLS.get(aid, DEFAULT_TOOLS)
+
+        # Always ensure summariser is present so agent can always produce Final Answer
+        if "summariser" not in tool_names:
+            tool_names = list(tool_names) + ["summariser"]
 
         tools = []
         for name in tool_names:
@@ -92,22 +120,11 @@ def build_agents(mode: str = "research") -> dict[str, Agent]:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _broadcast(broadcast_fn: Optional[Callable], msg: dict) -> None:
-    """
-    FIX 3: Fire-and-forget — never block the worker thread on broadcast.
-
-    Previous code called fut.result(timeout=2) which blocked the thread
-    2 seconds per message. With 5 agents × 2 events emitted before kickoff,
-    that was 10+ seconds of solid blocking *before* any LLM call, making
-    the coordinator appear permanently frozen.
-
-    broadcast_fn returns a concurrent.futures.Future from
-    run_coroutine_threadsafe. We schedule it and move on immediately;
-    the event loop will deliver it asynchronously.
-    """
+    """Fire-and-forget — never block the worker thread."""
     if broadcast_fn is None:
         return
     try:
-        broadcast_fn(msg)   # schedule on event loop — do NOT await or .result()
+        broadcast_fn(msg)
     except Exception as exc:
         logger.debug("broadcast error (ignored): %s", exc)
 
@@ -211,6 +228,47 @@ def _make_task_callback(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Task descriptions
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _build_task_descriptions(topic: str, file_context: str) -> dict[str, tuple[str, str]]:
+    """
+    Returns {agent_id: (description, expected_output)} pairs.
+
+    expected_output is deliberately short and concrete — the LLM uses it as
+    the target for its Final Answer, so vague expected_output causes looping.
+    """
+    return {
+        "coordinator": (
+            f"Plan the research for: '{topic}'.{file_context}\n"
+            "Output a numbered list of: (1) 3-5 key questions to investigate, "
+            "(2) the best sources to check, (3) the report structure. "
+            "Be concise. Do NOT delegate. Do NOT use tools unless you need "
+            "a web search to clarify the scope. Write your plan directly.",
+            "A numbered research plan with key questions, sources, and report structure.",
+        ),
+        "researcher": (
+            f"Research the topic: '{topic}'.{file_context}\n"
+            "Use web_search and knowledge_base_search to gather information. "
+            "Return a structured bullet-point summary with key findings and sources.",
+            "A structured bullet-point research summary with key findings and sources.",
+        ),
+        "analyst": (
+            f"Analyse the research on: '{topic}'.{file_context}\n"
+            "Identify the top 3-5 patterns, insights, or risks. "
+            "Use data_analyser if helpful. Be concise and direct.",
+            "A concise analysis listing the top 3-5 patterns, insights, or risks.",
+        ),
+        "writer": (
+            f"Write a professional markdown report on: '{topic}'.{file_context}\n"
+            "Sections: Executive Summary, Key Findings, Analysis, Recommendations. "
+            "Use clear headings. Do not pad — be concise.",
+            "A professional markdown report with Executive Summary, Key Findings, Analysis, and Recommendations.",
+        ),
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Main job runner
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -250,29 +308,7 @@ def run_crew(
         names = ", ".join(uploaded_files)
         file_context = f"\n\nUploaded files available: {names} (in {upload_dir})"
 
-    task_descriptions: dict[str, str] = {
-        "coordinator": (
-            f"You are the Research Coordinator. Your job is to plan the research on: '{topic}'.{file_context}\n"
-            "Write a concise research plan outlining: (1) the key questions to investigate, "
-            "(2) the primary sources to consult, and (3) the expected structure of the final report. "
-            "Do NOT delegate. Do NOT ask for more information. Produce the plan directly."
-        ),
-        "researcher": (
-            f"Research the topic: '{topic}'.{file_context}\n"
-            "Use available tools to gather comprehensive, up-to-date information. "
-            "Return a structured research summary with sources and key findings."
-        ),
-        "analyst": (
-            f"Analyse the research findings on: '{topic}'.{file_context}\n"
-            "Identify patterns, insights, risks, and opportunities. "
-            "Provide a data-driven analysis with clear conclusions."
-        ),
-        "writer": (
-            f"Write a professional report on: '{topic}'.{file_context}\n"
-            "Use the research and analysis to produce a well-structured markdown report "
-            "with executive summary, key findings, and recommendations."
-        ),
-    }
+    task_descs = _build_task_descriptions(topic, file_context)
 
     # ── Query mode: single agent fast path ──────────────────────────────────
     if mode == "query":
@@ -285,7 +321,7 @@ def run_crew(
 
         task = Task(
             description=topic,
-            expected_output="A clear, direct answer to the query.",
+            expected_output="A clear, direct answer in 1-3 sentences.",
             agent=agent,
             callback=_make_task_callback(broadcast_fn, agent_id, label),
         )
@@ -317,9 +353,14 @@ def run_crew(
     for aid in ordered_ids:
         agent = agents_map[aid]
         label = _label(aid)
-        desc  = task_descriptions.get(
-            aid, f"Work on the topic: '{topic}'. Provide a thorough response."
+        desc_pair = task_descs.get(
+            aid,
+            (
+                f"Work on the topic: '{topic}'. Provide a thorough response.",
+                "A detailed, well-structured written response.",
+            ),
         )
+        desc, expected = desc_pair
 
         _emit_activity(
             broadcast_fn, aid, label,
@@ -329,7 +370,7 @@ def run_crew(
 
         task = Task(
             description=desc,
-            expected_output="A detailed, well-structured written response.",
+            expected_output=expected,
             agent=agent,
             callback=_make_task_callback(broadcast_fn, aid, label),
         )
@@ -386,12 +427,12 @@ def run_crew(
         agents=agent_list,
         tasks=tasks,
         process=Process.sequential,
-        memory=False,       # no ChromaDB / embedchain / OpenAI embedding init
+        memory=False,
         step_callback=_crew_step_callback,
         verbose=True,
     )
 
-    logger.info("Kicking off crew with %d agents / %d tasks", len(agent_list), len(tasks))
+    logger.info("Kicking off crew — %d agents / %d tasks", len(agent_list), len(tasks))
     result_obj  = crew.kickoff()
     result_text = str(result_obj) if result_obj else "No output produced."
 
