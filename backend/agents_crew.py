@@ -1,7 +1,11 @@
 """
 agents_crew.py — Dynamic agent builder + job runner
-Reads from agent_registry, skips inactive agents, and merges any
-fields overridden in SKILLS.md before building CrewAI Agent objects.
+
+Fixes:
+  - agent_activity events now fire DURING execution (not before crew.kickoff)
+  - Uses CrewAI task callbacks to emit per-agent start/finish
+  - broadcast_fn.result() called to ensure messages reach the WS loop
+  - agent_working events emitted so 3D board room animates
 
 Exports:
     build_agents(mode)  — returns dict[agent_id, Agent]
@@ -39,7 +43,6 @@ FS_TOOL_MAP = {
     "fs_edit_file":  FSEditTool,
 }
 
-# Minimum recommended model for each mode.
 MODE_MODEL_HINT: dict[str, str] = {
     "research": "llama3.2:3b or larger",
     "analysis": "llama3.2:3b or larger",
@@ -47,18 +50,13 @@ MODE_MODEL_HINT: dict[str, str] = {
     "query":    "phi3:mini is fine",
 }
 
-# Phase order for broadcast events
 PHASE_ORDER = ["coordinator", "researcher", "analyst", "writer"]
 
 
 def build_agents(mode: str = "research") -> dict[str, Agent]:
     """
     Build a fresh dict of agent_id → CrewAI Agent.
-
-    For each agent:
-      1. Start with the registry definition.
-      2. Overlay any fields found in SKILLS.md (role/goal/backstory/tools/config).
-      3. Skip agents with active=False.
+    Merges SKILLS.md overrides, skips inactive agents.
     """
     cfg = get_llm_config()
     llm = ChatOllama(**cfg)
@@ -67,8 +65,7 @@ def build_agents(mode: str = "research") -> dict[str, Agent]:
     for defn in get_active_agents():
         aid = defn["id"]
 
-        # ── Merge SKILLS.md overrides ─────────────────────────────────────
-        skills = read_skills_file(aid) or {}
+        skills    = read_skills_file(aid) or {}
         role      = skills.get("role")      or defn["role"]
         goal      = skills.get("goal")      or defn["goal"]
         backstory = skills.get("backstory") or defn["backstory"]
@@ -77,12 +74,10 @@ def build_agents(mode: str = "research") -> dict[str, Agent]:
         if allow_del is None:
             allow_del = defn.get("allow_delegation", False)
 
-        # Tool list: SKILLS.md > registry tools > role default > global default
         skill_tools = skills.get("tools")
         reg_tools   = defn.get("tools")
         tool_names  = skill_tools or reg_tools or ROLE_TOOLS.get(aid, DEFAULT_TOOLS)
 
-        # ── Instantiate tools ─────────────────────────────────────────────
         tools = []
         for name in tool_names:
             if name in FS_TOOL_MAP:
@@ -103,26 +98,143 @@ def build_agents(mode: str = "research") -> dict[str, Agent]:
     return agents
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Broadcast helpers
+# ─────────────────────────────────────────────────────────────────────
+
 def _broadcast(broadcast_fn: Optional[Callable], msg: dict) -> None:
-    """Fire-and-forget broadcast, swallowing any errors."""
+    """
+    Call broadcast_fn(msg) and wait for the Future to complete.
+    broadcast_fn in main.py returns a concurrent.futures.Future
+    (from run_coroutine_threadsafe). We call .result(timeout=2) to
+    ensure the WS message is actually sent before we continue.
+    """
     if broadcast_fn is None:
         return
     try:
-        broadcast_fn(msg)
+        fut = broadcast_fn(msg)
+        # If broadcast_fn returns a Future, block briefly to flush it
+        if fut is not None and hasattr(fut, "result"):
+            try:
+                fut.result(timeout=2)
+            except Exception:
+                pass
     except Exception as exc:
         logger.debug("broadcast error (ignored): %s", exc)
 
 
-def _emit_phase(broadcast_fn: Optional[Callable], agent_id: str, label: str, message: str, phase: bool = False) -> None:
+def _emit_activity(
+    broadcast_fn: Optional[Callable],
+    agent_id: str,
+    label: str,
+    message: str,
+    phase: bool = False,
+    task_result: bool = False,
+) -> None:
+    """Emit an agent_activity WS event — shows in Activity Feed and animates agent cards."""
     _broadcast(broadcast_fn, {
         "type": "agent_activity",
         "agent": agent_id,
         "label": label,
         "message": message,
         "phase": phase,
+        "task_result": task_result,
         "ts": time.time(),
     })
 
+
+def _emit_working(
+    broadcast_fn: Optional[Callable],
+    agent_id: str,
+    label: str,
+    thought: str = "",
+) -> None:
+    """Emit an agent_working event — animates the 3D boardroom and sets currentWorker."""
+    _broadcast(broadcast_fn, {
+        "type": "agent_working",
+        "agent": agent_id,
+        "label": label,
+        "thought": thought,
+        "ts": time.time(),
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────
+# CrewAI step callback factory
+# ─────────────────────────────────────────────────────────────────────
+
+def _make_step_callback(
+    broadcast_fn: Optional[Callable],
+    agent_id: str,
+    label: str,
+) -> Callable:
+    """
+    Returns a callback compatible with CrewAI's step_callback.
+    Called after every LLM step (thought, action, observation).
+    """
+    def _cb(step_output: Any) -> None:
+        try:
+            # step_output may be AgentFinish, AgentAction, or a string
+            if hasattr(step_output, "log"):
+                text = str(step_output.log).strip()
+            elif hasattr(step_output, "return_values"):
+                text = str(step_output.return_values.get("output", "")).strip()
+            elif hasattr(step_output, "text"):
+                text = str(step_output.text).strip()
+            else:
+                text = str(step_output).strip()
+
+            if not text:
+                return
+
+            # Truncate very long thoughts for the feed
+            if len(text) > 300:
+                text = text[:297] + "…"
+
+            _emit_working(broadcast_fn, agent_id, label, text)
+            _emit_activity(broadcast_fn, agent_id, label, text, phase=False)
+        except Exception as exc:
+            logger.debug("step_callback error: %s", exc)
+
+    return _cb
+
+
+def _make_task_callback(
+    broadcast_fn: Optional[Callable],
+    agent_id: str,
+    label: str,
+) -> Callable:
+    """
+    Returns a callback compatible with CrewAI's task callbacks.
+    Called when a Task finishes.
+    """
+    def _cb(task_output: Any) -> None:
+        try:
+            if hasattr(task_output, "raw"):
+                text = str(task_output.raw).strip()
+            elif hasattr(task_output, "result"):
+                text = str(task_output.result).strip()
+            else:
+                text = str(task_output).strip()
+
+            if len(text) > 400:
+                text = text[:397] + "…"
+
+            _emit_activity(
+                broadcast_fn, agent_id, label,
+                f"✅ {label} finished: {text}",
+                phase=False,
+                task_result=True,
+            )
+        except Exception as exc:
+            logger.debug("task_callback error: %s", exc)
+
+    return _cb
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Main job runner
+# ─────────────────────────────────────────────────────────────────────
 
 def run_crew(
     topic: str,
@@ -142,9 +254,6 @@ def run_crew(
 
     Returns:
         (result_text, report_filename, report_format, tokens_in, tokens_out)
-
-    This is the function imported by main.py:
-        from agents_crew import run_crew
     """
     uploaded_files = uploaded_files or []
     report_dir = report_dir or Path("reports")
@@ -152,49 +261,20 @@ def run_crew(
 
     logger.info("run_crew started — topic=%r mode=%s model=%s", topic, mode, model)
 
-    # ── Build agents ──────────────────────────────────────────────────────
+    # Build agents
     agents_map = build_agents(mode=mode)
-
     if not agents_map:
         raise RuntimeError(
             "No active agents found. Please activate at least one agent via the Agents panel."
         )
 
-    # ── Single-agent query shortcut ───────────────────────────────────────
-    if mode == "query":
-        agent_id = next(iter(agents_map))
-        agent = agents_map[agent_id]
-        defn = next((d for d in get_active_agents() if d["id"] == agent_id), {})
-        label = defn.get("label") or defn.get("role", agent_id)
+    # Lookup helper: agent_id → human label
+    all_defns = {d["id"]: d for d in get_active_agents()}
+    def _label(aid: str) -> str:
+        d = all_defns.get(aid, {})
+        return d.get("label") or d.get("role") or aid
 
-        _emit_phase(broadcast_fn, agent_id, label, f"Answering: {topic}", phase=True)
-
-        task = Task(
-            description=topic,
-            expected_output="A clear, direct answer to the query.",
-            agent=agent,
-        )
-        crew = Crew(agents=[agent], tasks=[task], verbose=True)
-        result_obj = crew.kickoff()
-        result_text = str(result_obj) if result_obj else ""
-
-        # Save report
-        report_filename = f"report_{uuid.uuid4().hex[:8]}.md"
-        (report_dir / report_filename).write_text(result_text, encoding="utf-8")
-
-        _emit_phase(broadcast_fn, agent_id, label, "✅ Done", phase=False)
-        return result_text, report_filename, "md", 0, 0
-
-    # ── Full pipeline (research / file / analysis) ────────────────────────
-    # Build tasks in phase order, only for agents that exist
-    available_ids = list(agents_map.keys())
-    phase_ids = [p for p in PHASE_ORDER if p in available_ids]
-
-    # Also include any custom agents not in PHASE_ORDER
-    extra_ids = [aid for aid in available_ids if aid not in PHASE_ORDER]
-    ordered_ids = phase_ids + extra_ids
-
-    # Build task descriptions per agent role
+    # Build task descriptions
     file_context = ""
     if uploaded_files and upload_dir:
         names = ", ".join(uploaded_files)
@@ -203,8 +283,7 @@ def run_crew(
     task_descriptions: dict[str, str] = {
         "coordinator": (
             f"You are the Coordinator. Plan and delegate research on the topic: '{topic}'.{file_context}\n"
-            "Identify the key research questions, delegate sub-tasks to researcher/analyst/writer agents, "
-            "and ensure the final output is coherent and complete."
+            "Identify the key research questions and ensure the final output is coherent and complete."
         ),
         "researcher": (
             f"Research the topic: '{topic}'.{file_context}\n"
@@ -218,49 +297,145 @@ def run_crew(
         ),
         "writer": (
             f"Write a professional report on: '{topic}'.{file_context}\n"
-            "Use the research and analysis results to produce a well-structured, "
-            "comprehensive markdown report with executive summary, key findings, and recommendations."
+            "Use the research and analysis to produce a well-structured markdown report "
+            "with executive summary, key findings, and recommendations."
         ),
     }
 
-    tasks = []
+    # ── Query mode: single agent fast path ────────────────────────────────
+    if mode == "query":
+        agent_id = next(iter(agents_map))
+        agent    = agents_map[agent_id]
+        label    = _label(agent_id)
+
+        _emit_activity(broadcast_fn, agent_id, label, f"💡 Answering: {topic}", phase=True)
+        _emit_working(broadcast_fn, agent_id, label, "Thinking…")
+
+        task = Task(
+            description=topic,
+            expected_output="A clear, direct answer to the query.",
+            agent=agent,
+            callback=_make_task_callback(broadcast_fn, agent_id, label),
+        )
+        crew = Crew(
+            agents=[agent],
+            tasks=[task],
+            step_callback=_make_step_callback(broadcast_fn, agent_id, label),
+            verbose=True,
+        )
+        result_obj  = crew.kickoff()
+        result_text = str(result_obj) if result_obj else ""
+
+        report_filename = f"report_{uuid.uuid4().hex[:8]}.md"
+        (report_dir / report_filename).write_text(result_text, encoding="utf-8")
+        _emit_activity(broadcast_fn, agent_id, label, "✅ Done", task_result=True)
+        return result_text, report_filename, "md", 0, 0
+
+    # ── Full pipeline ──────────────────────────────────────────────────────
+    available_ids = list(agents_map.keys())
+    phase_ids     = [p for p in PHASE_ORDER if p in available_ids]
+    extra_ids     = [a for a in available_ids if a not in PHASE_ORDER]
+    ordered_ids   = phase_ids + extra_ids
+
+    tasks      = []
     agent_list = []
+
     for aid in ordered_ids:
         agent = agents_map[aid]
-        defn = next((d for d in get_active_agents() if d["id"] == aid), {})
-        label = defn.get("label") or defn.get("role", aid)
+        label = _label(aid)
+        desc  = task_descriptions.get(
+            aid, f"Work on the topic: '{topic}'. Provide a thorough response."
+        )
 
-        desc = task_descriptions.get(aid, f"Work on the topic: '{topic}'. Provide a thorough response.")
-        expected = "A detailed, well-structured written response."
-
-        # Broadcast phase start
-        _emit_phase(broadcast_fn, aid, label, f"Starting: {topic}", phase=True)
+        # Emit a "phase started" event immediately when the task is queued
+        _emit_activity(
+            broadcast_fn, aid, label,
+            f"🟡 {label} queued",
+            phase=True,
+        )
 
         task = Task(
             description=desc,
-            expected_output=expected,
+            expected_output="A detailed, well-structured written response.",
             agent=agent,
+            callback=_make_task_callback(broadcast_fn, aid, label),
         )
         tasks.append(task)
         agent_list.append(agent)
 
-    # ── Kick off crew ─────────────────────────────────────────────────────
-    crew = Crew(agents=agent_list, tasks=tasks, verbose=True)
+    # Wire a per-step callback on the Crew level.
+    # We track the "current" agent by watching step output agent attribute.
+    _current: Dict[str, Any] = {"aid": ordered_ids[0] if ordered_ids else ""}
+
+    def _crew_step_callback(step_output: Any) -> None:
+        """Called by CrewAI after every LLM step across all agents."""
+        # Try to figure out which agent produced this step
+        aid = _current["aid"]
+        try:
+            if hasattr(step_output, "agent") and step_output.agent:
+                aid = str(step_output.agent)
+                _current["aid"] = aid
+        except Exception:
+            pass
+
+        label = _label(aid)
+
+        try:
+            if hasattr(step_output, "log"):
+                text = str(step_output.log).strip()
+            elif hasattr(step_output, "return_values"):
+                text = str(step_output.return_values.get("output", "")).strip()
+            elif hasattr(step_output, "text"):
+                text = str(step_output.text).strip()
+            else:
+                text = str(step_output).strip()
+
+            if not text:
+                return
+            if len(text) > 300:
+                text = text[:297] + "…"
+
+            _emit_working(broadcast_fn, aid, label, text)
+            _emit_activity(broadcast_fn, aid, label, text, phase=False)
+        except Exception as exc:
+            logger.debug("crew step_callback error: %s", exc)
+
+    # Emit working state for first agent before kickoff
+    if ordered_ids:
+        first_aid   = ordered_ids[0]
+        first_label = _label(first_aid)
+        _emit_activity(
+            broadcast_fn, first_aid, first_label,
+            f"🔍 {first_label} is starting…",
+            phase=True,
+        )
+        _emit_working(broadcast_fn, first_aid, first_label, "Thinking…")
+
+    crew = Crew(
+        agents=agent_list,
+        tasks=tasks,
+        step_callback=_crew_step_callback,
+        verbose=True,
+    )
 
     logger.info("Kicking off crew with %d agents / %d tasks", len(agent_list), len(tasks))
-    result_obj = crew.kickoff()
+    result_obj  = crew.kickoff()
     result_text = str(result_obj) if result_obj else "No output produced."
 
-    # ── Save report ───────────────────────────────────────────────────────
+    # Save report
     report_filename = f"report_{uuid.uuid4().hex[:8]}.md"
-    report_path = report_dir / report_filename
+    report_path     = report_dir / report_filename
     report_path.write_text(result_text, encoding="utf-8")
     logger.info("Report saved: %s", report_path)
 
-    # Broadcast completion for each phase
+    # Final completion broadcast for all agents
     for aid in ordered_ids:
-        defn = next((d for d in get_active_agents() if d["id"] == aid), {})
-        label = defn.get("label") or defn.get("role", aid)
-        _emit_phase(broadcast_fn, aid, label, "✅ Complete", phase=False)
+        label = _label(aid)
+        _emit_activity(
+            broadcast_fn, aid, label,
+            f"✅ {label} complete",
+            phase=False,
+            task_result=True,
+        )
 
     return result_text, report_filename, "md", 0, 0
