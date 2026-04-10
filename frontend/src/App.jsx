@@ -54,6 +54,7 @@ export default function App() {
   /* ── Dashboard state ─────────────────────────────────── */
   const [stats,           setStats]           = useState(null)
   const [showDashboard,   setShowDashboard]   = useState(false)
+  const [show3DRoom, setShow3DRoom] = useState(false)
 
   /* ── Agent editor state ──────────────────────────────── */
   const [agents,          setAgents]          = useState([])
@@ -2355,28 +2356,75 @@ const handleOpenSkills = async (agent) => {
         </div>
       )}
 
-      {/* ── 3D Canvas ─────────────────────────────────────── */}
-      <div className="canvas-area">
-        <div className="canvas-label">Agent Office · Drag to orbit · Scroll to zoom</div>
-        {running && (
-          <div className="phase-bar">
-            {PHASE_ORDER.map((p,i) => {
-              const m = PHASE_META[p] || { icon:'🤖', name:p }
-              const active = currentPhase===p, done=currentPhaseIndex>i
-              return (
-                <div key={p} className={`phase-step${active?' active':''}${done?' done':''}`}>
-                  <span className="phase-icon">{m.icon}</span>
-                  <span className="phase-name">{m.name}</span>
-                  {i<3 && <span className="phase-arrow">→</span>}
-                </div>
-              )
-            })}
+      {/* ── Info Bar ─────────────────────────────────────────── */}
+      <div className="info-bar">
+        <div className="info-bar-left">
+          <div className="info-pill model-pill">
+            <span className="info-pill-icon">🤖</span>
+            <span className="info-pill-label">Model</span>
+            <span className="info-pill-value" style={{color: modelBadgeColor()}}>{currentModel}</span>
           </div>
-        )}
-        <AgentScene3D activeAgent={activeAgent} agents={agents}
-          lastMessages={lastMessages} currentPhase={currentPhase}
-          currentWorker={currentWorker}/>
+          <div className={`info-pill conn-pill ${connected ? 'conn-ok' : 'conn-bad'}`}>
+            <span className="info-pill-icon">{connected ? '🟢' : '🔴'}</span>
+            <span className="info-pill-value">{connected ? 'Connected' : 'Connecting…'}</span>
+          </div>
+          {currentPhase && (
+            <div className="info-pill phase-pill">
+              <span className="info-pill-icon">{PHASE_META[currentPhase]?.icon}</span>
+              <span className="info-pill-label">Phase</span>
+              <span className="info-pill-value">{PHASE_META[currentPhase]?.name}</span>
+            </div>
+          )}
+          {running && (
+            <div className="info-pill running-pill">
+              <span className="info-pill-icon blink">⚡</span>
+              <span className="info-pill-value">Running</span>
+            </div>
+          )}
+        </div>
+        <div className="info-bar-right">
+          {stats && (
+            <>
+              <div className="info-stat"><span className="info-stat-label">RAM</span><span className="info-stat-value">{stats.ram_used_gb}GB/{stats.ram_total_gb}GB</span></div>
+              <div className="info-stat"><span className="info-stat-label">CPU</span><span className="info-stat-value">{stats.cpu_pct}%</span></div>
+              <div className="info-stat"><span className="info-stat-label">Tokens↑</span><span className="info-stat-value">{stats.tokens_in.toLocaleString()}</span></div>
+              <div className="info-stat"><span className="info-stat-label">Tokens↓</span><span className="info-stat-value">{stats.tokens_out.toLocaleString()}</span></div>
+              {jobId && <div className="info-stat"><span className="info-stat-label">Job</span><span className="info-stat-value" style={{color:'#818cf8'}}>#{jobId}</span></div>}
+            </>
+          )}
+          <button
+            className={`boardroom-btn ${show3DRoom ? 'active' : ''}`}
+            onClick={() => setShow3DRoom(v => !v)}
+            title="Toggle 3D Board Room">
+            🏛️ {show3DRoom ? 'Hide Board Room' : 'View Board Room'}
+          </button>
+        </div>
       </div>
+
+      {/* ── 3D Canvas ─────────────────────────────────────── */}
+      {show3DRoom && (
+        <div className="canvas-area">
+          <div className="canvas-label">Agent Office · Drag to orbit · Scroll to zoom</div>
+          {running && (
+            <div className="phase-bar">
+              {PHASE_ORDER.map((p,i) => {
+                const m = PHASE_META[p] || { icon:'🤖', name:p }
+                const active = currentPhase===p, done=currentPhaseIndex>i
+                return (
+                  <div key={p} className={`phase-step${active?' active':''}${done?' done':''}`}>
+                    <span className="phase-icon">{m.icon}</span>
+                    <span className="phase-name">{m.name}</span>
+                    {i<3 && <span className="phase-arrow">→</span>}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+          <AgentScene3D activeAgent={activeAgent} agents={agents}
+            lastMessages={lastMessages} currentPhase={currentPhase}
+            currentWorker={currentWorker}/>
+        </div>
+      )}
 
       {/* ── Side Panel ────────────────────────────────────── */}
       <aside className="side-panel">
