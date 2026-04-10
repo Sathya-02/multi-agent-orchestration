@@ -918,17 +918,6 @@ const handleOpenSkills = async (agent) => {
             onClick={() => { setShowSettings(v=>!v); if(!showSettings){fetchTelegramConfig();fetchSiConfig();fetchBestPractices();fetchProposals()} setShowDashboard(false); setShowUploadPanel(false); setShowAgentEditor(false); setShowToolPanel(false); setShowFsPanel(false); setShowModelPanel(false) }}>
             ⚙️ Settings
           </button>
-          <button className="model-badge"
-            onClick={() => { setShowModelPanel(v=>!v); setShowDashboard(false); setShowUploadPanel(false); setShowAgentEditor(false); fetchModels() }}
-            style={{'--badge-color': modelBadgeColor()}} title="Change model">
-            <span className="model-dot"/>
-            {currentModel}
-            <span className="model-chevron">{showModelPanel?'▲':'▼'}</span>
-          </button>
-          <div style={{width:1,height:16,background:'rgba(99,102,241,0.3)',margin:'0 6px'}}/>
-          <div className={`status-dot ${connected?'':'inactive'}`}/>
-          {connected?'Connected':'Connecting…'}
-          {jobId && <span style={{marginLeft:8,color:'#6366f1',fontSize:11}}>Job #{jobId}</span>}
         </div>
       </header>
 
