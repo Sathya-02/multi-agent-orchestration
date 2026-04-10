@@ -55,12 +55,14 @@ try:
         delete_source,
         get_all_entries,
         get_entry_count,
+        list_sources,
         ingest_file,
         ingest_text,
+        retrieve,
         load_kb_config,
         save_kb_config,
+        clear_store,
         search as kb_search,
-        _load_store,
         KB_DIR,
     )
     RAG_ENABLED = True
@@ -70,9 +72,6 @@ except Exception as e:
 
 # ---------------------------------------------------------------------------
 # Optional Filesystem config
-# ---------------------------------------------------------------------------
-# fs_config uses module-level functions — no FSConfig class exists.
-# We import the real functions and add thin helpers to match endpoint usage.
 # ---------------------------------------------------------------------------
 try:
     import fs_config as _fs_mod
@@ -89,15 +88,12 @@ try:
     )
 
     def get_fs_config() -> dict:
-        """Return the FS config dict expected by /fs-config endpoints."""
         return {"access_list": get_access_list(), "output_dir": get_output_dir()}
 
     def save_fs_config(cfg: dict) -> None:
-        """No-op placeholder — fs_config is settings-driven."""
         pass
 
     def update_access_flag(path: str, flag: str, value: bool) -> None:
-        """Delegate flag update to update_access_entry."""
         update_access_entry(path, **{flag: value})
 
     def check_access(path: str, agent: str = "agent") -> dict:
@@ -111,9 +107,6 @@ except Exception as e:
 
 # ---------------------------------------------------------------------------
 # Optional Tool registry
-# ---------------------------------------------------------------------------
-# tool_registry uses module-level functions — no ToolRegistry class exists.
-# _ToolRegistryAdapter wraps them with the OO interface expected by endpoints.
 # ---------------------------------------------------------------------------
 try:
     import tool_registry as _tr
@@ -154,9 +147,6 @@ except Exception as e:
 # ---------------------------------------------------------------------------
 # Optional Agent registry
 # ---------------------------------------------------------------------------
-# agent_registry uses module-level functions — no AgentRegistry class exists.
-# _AgentRegistryAdapter wraps them with the OO interface expected by endpoints.
-# ---------------------------------------------------------------------------
 try:
     import agent_registry as _ar
 
@@ -195,9 +185,6 @@ except Exception as e:
 
 # ---------------------------------------------------------------------------
 # Optional Self-improver
-# ---------------------------------------------------------------------------
-# self_improver uses module-level functions — no SelfImprover class exists.
-# _SelfImproverAdapter wraps them with the OO interface expected by endpoints.
 # ---------------------------------------------------------------------------
 try:
     import self_improver as _si
@@ -238,9 +225,6 @@ except Exception as e:
 # ---------------------------------------------------------------------------
 # Optional Web Search
 # ---------------------------------------------------------------------------
-# web_search_tool uses module-level functions — no WebSearchTool class exists.
-# _WebSearchAdapter wraps them with the OO interface expected by endpoints.
-# ---------------------------------------------------------------------------
 try:
     import web_search_tool as _wst
 
@@ -270,10 +254,6 @@ except Exception as e:
 # ---------------------------------------------------------------------------
 # Optional Telegram
 # ---------------------------------------------------------------------------
-# telegram_bot uses module-level functions — no TelegramBot class exists.
-# TelegramBot adapter provides static load_config/save_config and instance
-# send_message() so that existing endpoint code works unchanged.
-# ---------------------------------------------------------------------------
 try:
     import telegram_bot as _tgb
     from telegram_bot import (
@@ -283,8 +263,6 @@ try:
     )
 
     class TelegramBot:
-        """Thin adapter — wraps module-level telegram_bot functions."""
-
         _CFG_PATH = Path(__file__).parent / "data" / "telegram_config.json"
 
         @staticmethod
@@ -295,12 +273,7 @@ try:
                     return json.loads(p.read_text(encoding="utf-8"))
                 except Exception:
                     pass
-            return {
-                "token": "",
-                "allowed_chats": [],
-                "notify_chat": "",
-                "enabled": False,
-            }
+            return {"token": "", "allowed_chats": [], "notify_chat": "", "enabled": False}
 
         @staticmethod
         def save_config(base_dir, cfg: dict):
@@ -322,9 +295,6 @@ except Exception as e:
 # ---------------------------------------------------------------------------
 # Optional Model config
 # ---------------------------------------------------------------------------
-# model_config uses module-level functions — no ModelConfig class exists.
-# Import the three functions directly; fall back to simple stubs if unavailable.
-# ---------------------------------------------------------------------------
 try:
     from model_config import get_active_model, set_active_model, get_llm_config
     MODEL_CONFIG_ENABLED = True
@@ -343,9 +313,6 @@ except Exception as e:
 
 # ---------------------------------------------------------------------------
 # Optional settings
-# ---------------------------------------------------------------------------
-# settings.py exposes module-level constants — no Settings class exists.
-# Import the constants we need; fall back to sensible defaults if unavailable.
 # ---------------------------------------------------------------------------
 try:
     import settings as _settings_mod
@@ -373,10 +340,9 @@ except Exception as e:
     OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 
 # ---------------------------------------------------------------------------
-# Auth (simple bearer token, optional)
+# Auth
 # ---------------------------------------------------------------------------
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")
-
 security = HTTPBearer(auto_error=False)
 
 
@@ -990,9 +956,19 @@ async def decide_tool_spawn(body: ToolSpawnDecision, current_user=_auth_dep):
 # ---------------------------------------------------------------------------
 @app.get("/kb/entries")
 def kb_list_entries(current_user=_auth_dep):
+    """
+    BUG FIX: get_all_entries() returns a plain list; the frontend expects
+    {entries, sources, count}. Wrap it in the right shape here.
+    """
     if not RAG_ENABLED:
         return {"entries": [], "sources": [], "count": 0}
-    return get_all_entries()
+    entries = get_all_entries()          # list[dict], no 'vector' keys
+    sources = list_sources()             # list[{source, chunks, ts, tags}]
+    return {
+        "entries": entries,
+        "sources": sources,
+        "count":   len(entries),
+    }
 
 
 @app.get("/kb/config")
@@ -1007,33 +983,44 @@ def kb_update_config(body: KBConfigUpdate, current_user=_auth_dep):
     if not RAG_ENABLED:
         raise HTTPException(status_code=404, detail="RAG disabled")
     cfg = load_kb_config()
-    if body.enabled       is not None: cfg["enabled"]       = body.enabled
-    if body.chunk_size    is not None: cfg["chunk_size"]     = body.chunk_size
-    if body.chunk_overlap is not None: cfg["chunk_overlap"]  = body.chunk_overlap
-    if body.top_k         is not None: cfg["top_k"]          = body.top_k
-    if body.min_score     is not None: cfg["min_score"]      = body.min_score
-    if body.embed_model   is not None: cfg["embed_model"]    = body.embed_model
+    if body.enabled       is not None: cfg["enabled"]        = body.enabled
+    if body.chunk_size    is not None: cfg["chunk_size"]      = body.chunk_size
+    if body.chunk_overlap is not None: cfg["chunk_overlap"]   = body.chunk_overlap
+    if body.top_k         is not None: cfg["top_k"]           = body.top_k
+    if body.min_score     is not None: cfg["min_score"]       = body.min_score
+    if body.embed_model   is not None: cfg["embed_model"]     = body.embed_model
     save_kb_config(cfg)
     return cfg
 
 
 @app.post("/kb/ingest-text")
 def kb_ingest_text_endpoint(body: KBIngestText, current_user=_auth_dep):
+    """
+    BUG FIX: rag_engine.ingest_text() signature is
+        ingest_text(text, source_name, tags=None)
+    NOT source=... (keyword mismatch caused it to always use the default
+    name and return a dict, not an int).
+    Return the full result dict so the caller gets meaningful info.
+    """
     if not RAG_ENABLED:
         raise HTTPException(status_code=404, detail="RAG disabled")
-    count = ingest_text(body.text, source=body.source, tags=body.tags)
-    return {"chunks_added": count}
+    result = ingest_text(body.text, body.source, tags=body.tags)
+    return result  # {source, chunks_added, chunks_skipped, message}
 
 
 @app.post("/kb/ingest-file")
 async def kb_ingest_file(file: UploadFile = File(...), current_user=_auth_dep):
+    """
+    BUG FIX: ingest_file() returns a dict {source, chunks_added, ...},
+    not an int. Unwrap the result correctly.
+    """
     if not RAG_ENABLED:
         raise HTTPException(status_code=404, detail="RAG disabled")
     dest = KB_DIR / file.filename
     with open(dest, "wb") as fh:
         shutil.copyfileobj(file.file, fh)
-    count = ingest_file(dest)
-    return {"filename": file.filename, "chunks_added": count}
+    result = ingest_file(dest)           # returns dict, not int
+    return result  # {source, chunks_added, chunks_skipped, removed_old, message}
 
 
 @app.delete("/kb/entries/{entry_id}")
@@ -1048,29 +1035,34 @@ def kb_delete_entry(entry_id: str, current_user=_auth_dep):
 def kb_delete_source(source: str, current_user=_auth_dep):
     if not RAG_ENABLED:
         raise HTTPException(status_code=404, detail="RAG disabled")
-    delete_source(source)
-    return {"deleted": source}
+    removed = delete_source(source)
+    return {"deleted": source, "chunks_removed": removed}
 
 
 @app.post("/kb/clear")
 def kb_clear(current_user=_auth_dep):
+    """
+    BUG FIX: old code called _load_store() (returns None, not a dict),
+    then did store['entries'] = [] which crashed with TypeError.
+    Use the proper clear_store() helper instead.
+    """
     if not RAG_ENABLED:
         raise HTTPException(status_code=404, detail="RAG disabled")
-    store = _load_store()
-    store["entries"] = []
-    import json as _json
-    from rag_engine import STORE_PATH
-    with open(STORE_PATH, "w") as f:
-        _json.dump(store, f)
+    clear_store()
     return {"cleared": True}
 
 
 @app.get("/kb/search")
 def kb_search_endpoint(q: str = Query(...), current_user=_auth_dep):
+    """
+    kb_search() (alias for search()) returns a formatted string for LLM
+    consumption.  For the UI search endpoint return the raw chunk list
+    from retrieve() so the frontend can render individual results.
+    """
     if not RAG_ENABLED:
         return {"result": [], "error": "RAG disabled"}
     try:
-        results = kb_search(q)
+        results = retrieve(q)
         return {"result": results}
     except Exception as e:
         return {"result": [], "error": str(e)}
@@ -1081,7 +1073,7 @@ def kb_rag_query(body: RAGQuery, current_user=_auth_dep):
     if not RAG_ENABLED:
         return {"answer": "", "chunks": [], "error": "RAG disabled"}
     try:
-        chunks = kb_search(body.query, top_k=body.top_k)
+        chunks = retrieve(body.query, top_k=body.top_k)
         return {"chunks": chunks, "query": body.query}
     except Exception as e:
         return {"chunks": [], "error": str(e)}
