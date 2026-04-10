@@ -1,14 +1,17 @@
 """
 agents_crew.py — Dynamic agent builder + job runner
 
-Fixes:
-  - agent_activity events now fire DURING execution (not before crew.kickoff)
-  - Uses CrewAI task callbacks to emit per-agent start/finish
-  - broadcast_fn.result() called to ensure messages reach the WS loop
-  - agent_working events emitted so 3D board room animates
-  - allow_delegation forced False to prevent coordinator hang in CrewAI 0.51
-  - step_callback handles both list and single-item signatures (CrewAI 0.51)
-  - Process.sequential enforced to avoid hierarchical manager LLM deadlock
+Fixes (cumulative):
+  - agent_activity events fire DURING execution via step/task callbacks
+  - broadcast_fn.result() blocks to flush WS messages to the event loop
+  - agent_working events emitted so 3D boardroom animates
+  - allow_delegation forced False (prevents CrewAI 0.51 hierarchical hang)
+  - Process.sequential enforced (avoids manager_llm deadlock)
+  - step_callback handles list signature (CrewAI 0.51 changed the API)
+  - memory=False on Crew (RAGStorage initialises ChromaDB + OpenAI embeddings
+    by default; without OPENAI_API_KEY the embedchain App.from_config() call
+    hangs indefinitely while the agent executor silently waits — this is WHY
+    the coordinator always stalls at "Starting…" with no /api/chat ever fired)
 
 Exports:
     build_agents(mode)  — returns dict[agent_id, Agent]
@@ -61,11 +64,10 @@ def build_agents(mode: str = "research") -> dict[str, Agent]:
     Build a fresh dict of agent_id → CrewAI Agent.
     Merges SKILLS.md overrides, skips inactive agents.
 
-    FIX: allow_delegation is forced to False for ALL agents regardless of
-    registry or skills file setting.  In CrewAI 0.51 with Process.sequential,
-    allow_delegation=True on the coordinator causes it to attempt to delegate
-    to other agents via an internal manager LLM call that never resolves
-    (because there is no manager agent configured), hanging the entire job.
+    Key constraints for CrewAI 0.51 + local Ollama:
+      - allow_delegation=False always: delegation in sequential mode causes
+        an internal manager LLM call that never resolves.
+      - max_iter kept small (8) to avoid runaway token usage on small models.
     """
     cfg = get_llm_config()
     llm = ChatOllama(**cfg)
@@ -98,18 +100,15 @@ def build_agents(mode: str = "research") -> dict[str, Agent]:
             tools            = tools,
             llm              = llm,
             verbose          = True,
-            # CRITICAL FIX: always False in sequential mode.
-            # allow_delegation=True with Process.sequential causes CrewAI 0.51
-            # to hang waiting for an internal manager LLM that never responds.
-            allow_delegation = False,
+            allow_delegation = False,   # MUST be False — see module docstring
             max_iter         = max_iter,
         )
     return agents
 
 
-# ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────
 # Broadcast helpers
-# ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────
 
 def _broadcast(broadcast_fn: Optional[Callable], msg: dict) -> None:
     """
@@ -122,7 +121,6 @@ def _broadcast(broadcast_fn: Optional[Callable], msg: dict) -> None:
         return
     try:
         fut = broadcast_fn(msg)
-        # If broadcast_fn returns a Future, block briefly to flush it
         if fut is not None and hasattr(fut, "result"):
             try:
                 fut.result(timeout=2)
@@ -168,9 +166,9 @@ def _emit_working(
     })
 
 
-# ───────────────────────────────────────────────────────────────────
-# CrewAI step callback factory
-# ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────
+# CrewAI callback factories
+# ─────────────────────────────────────────────────────────────────────
 
 def _make_step_callback(
     broadcast_fn: Optional[Callable],
@@ -178,15 +176,11 @@ def _make_step_callback(
     label: str,
 ) -> Callable:
     """
-    Returns a callback compatible with CrewAI 0.51 step_callback.
-    Called after every LLM step (thought, action, observation).
-
-    FIX: CrewAI 0.51 passes a LIST of step outputs to step_callback,
-    not a single object. Handle both list and single-object signatures.
+    Returns a step_callback for a single-agent Crew (query mode).
+    CrewAI 0.51 passes a LIST to step_callback; handle both list and single.
     """
     def _cb(step_output: Any) -> None:
         try:
-            # CrewAI 0.51 passes a list; earlier versions pass a single object
             items = step_output if isinstance(step_output, list) else [step_output]
             for item in items:
                 if hasattr(item, "log"):
@@ -200,8 +194,6 @@ def _make_step_callback(
 
                 if not text:
                     continue
-
-                # Truncate very long thoughts for the feed
                 if len(text) > 300:
                     text = text[:297] + "…"
 
@@ -218,10 +210,7 @@ def _make_task_callback(
     agent_id: str,
     label: str,
 ) -> Callable:
-    """
-    Returns a callback compatible with CrewAI’s task callbacks.
-    Called when a Task finishes.
-    """
+    """Called when a Task finishes."""
     def _cb(task_output: Any) -> None:
         try:
             if hasattr(task_output, "raw"):
@@ -246,9 +235,9 @@ def _make_task_callback(
     return _cb
 
 
-# ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────
 # Main job runner
-# ───────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────
 
 def run_crew(
     topic: str,
@@ -275,20 +264,17 @@ def run_crew(
 
     logger.info("run_crew started — topic=%r mode=%s model=%s", topic, mode, model)
 
-    # Build agents
     agents_map = build_agents(mode=mode)
     if not agents_map:
         raise RuntimeError(
             "No active agents found. Please activate at least one agent via the Agents panel."
         )
 
-    # Lookup helper: agent_id → human label
     all_defns = {d["id"]: d for d in get_active_agents()}
     def _label(aid: str) -> str:
         d = all_defns.get(aid, {})
         return d.get("label") or d.get("role") or aid
 
-    # Build task descriptions
     file_context = ""
     if uploaded_files and upload_dir:
         names = ", ".join(uploaded_files)
@@ -318,7 +304,7 @@ def run_crew(
         ),
     }
 
-    # ── Query mode: single agent fast path ──────────────────────────────────────
+    # ── Query mode: single agent fast path ────────────────────────────
     if mode == "query":
         agent_id = next(iter(agents_map))
         agent    = agents_map[agent_id]
@@ -337,6 +323,7 @@ def run_crew(
             agents=[agent],
             tasks=[task],
             process=Process.sequential,
+            memory=False,           # ← CRITICAL: no ChromaDB / embeddings
             step_callback=_make_step_callback(broadcast_fn, agent_id, label),
             verbose=True,
         )
@@ -348,7 +335,7 @@ def run_crew(
         _emit_activity(broadcast_fn, agent_id, label, "✅ Done", task_result=True)
         return result_text, report_filename, "md", 0, 0
 
-    # ── Full pipeline ────────────────────────────────────────────────────────
+    # ── Full pipeline ──────────────────────────────────────────────────
     available_ids = list(agents_map.keys())
     phase_ids     = [p for p in PHASE_ORDER if p in available_ids]
     extra_ids     = [a for a in available_ids if a not in PHASE_ORDER]
@@ -364,7 +351,6 @@ def run_crew(
             aid, f"Work on the topic: '{topic}'. Provide a thorough response."
         )
 
-        # Emit a "phase started" event immediately when the task is queued
         _emit_activity(
             broadcast_fn, aid, label,
             f"🟡 {label} queued",
@@ -380,20 +366,15 @@ def run_crew(
         tasks.append(task)
         agent_list.append(agent)
 
-    # Wire a per-step callback on the Crew level.
-    # We track the "current" agent by watching step output agent attribute.
     _current: Dict[str, Any] = {"aid": ordered_ids[0] if ordered_ids else ""}
 
     def _crew_step_callback(step_output: Any) -> None:
         """
-        Called by CrewAI after every LLM step across all agents.
-
-        FIX: CrewAI 0.51 passes a LIST to step_callback, not a single object.
-        Unwrap the list before processing.
+        CrewAI 0.51 passes a LIST of step outputs; handle both forms.
         """
-        aid = _current["aid"]
-        # Unwrap list (CrewAI 0.51 wraps steps in a list)
+        aid   = _current["aid"]
         items = step_output if isinstance(step_output, list) else [step_output]
+
         for item in items:
             try:
                 if hasattr(item, "agent") and item.agent:
@@ -424,7 +405,6 @@ def run_crew(
             except Exception as exc:
                 logger.debug("crew step_callback error: %s", exc)
 
-    # Emit working state for first agent before kickoff
     if ordered_ids:
         first_aid   = ordered_ids[0]
         first_label = _label(first_aid)
@@ -435,15 +415,17 @@ def run_crew(
         )
         _emit_working(broadcast_fn, first_aid, first_label, "Thinking…")
 
-    # FIX: Always use Process.sequential.
-    # The default (hierarchical) process requires a manager_llm to be
-    # configured on the Crew. Without it, CrewAI 0.51 silently hangs
-    # after the first agent emits its plan, waiting for manager approval
-    # that never arrives.
     crew = Crew(
         agents=agent_list,
         tasks=tasks,
         process=Process.sequential,
+        # CRITICAL FIX: memory=False
+        # When memory=True (the default), CrewAI initialises RAGStorage which
+        # calls embedchain.App.from_config() → ChromaDB + OpenAI embeddings.
+        # Without OPENAI_API_KEY the embedchain init blocks indefinitely waiting
+        # for the OpenAI embedding endpoint — this is the exact hang seen as
+        # "COORDINATOR is starting…" with no /api/chat ever being fired.
+        memory=False,
         step_callback=_crew_step_callback,
         verbose=True,
     )
@@ -452,13 +434,11 @@ def run_crew(
     result_obj  = crew.kickoff()
     result_text = str(result_obj) if result_obj else "No output produced."
 
-    # Save report
     report_filename = f"report_{uuid.uuid4().hex[:8]}.md"
     report_path     = report_dir / report_filename
     report_path.write_text(result_text, encoding="utf-8")
     logger.info("Report saved: %s", report_path)
 
-    # Final completion broadcast for all agents
     for aid in ordered_ids:
         label = _label(aid)
         _emit_activity(
