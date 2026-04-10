@@ -530,7 +530,7 @@ app.add_middleware(
 
 
 # ---------------------------------------------------------------------------
-# WebSocket broadcast helper
+# WebSocket broadcast helper (async)
 # ---------------------------------------------------------------------------
 async def broadcast(msg: dict):
     dead = []
@@ -544,6 +544,39 @@ async def broadcast(msg: dict):
             connected_clients.remove(ws)
         except ValueError:
             pass
+
+
+# ---------------------------------------------------------------------------
+# sync_broadcast — callable from synchronous tool code (e.g. SpawnAgentTool,
+# SpawnToolTool) that runs in a background thread outside the event loop.
+# It schedules the async broadcast coroutine onto the running event loop and
+# waits up to 2 s for delivery.
+# ---------------------------------------------------------------------------
+def sync_broadcast(msg: dict) -> None:
+    """
+    Thread-safe synchronous wrapper around the async broadcast() coroutine.
+
+    SpawnAgentTool and SpawnToolTool in tools.py call:
+        import main as _main
+        _main.sync_broadcast({...})
+
+    Because those tools execute in a worker thread (via run_in_executor),
+    they cannot use `await` directly. This function bridges the gap by
+    scheduling the coroutine on the running event loop.
+    """
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(broadcast(msg), loop)
+            try:
+                future.result(timeout=2)
+            except Exception as exc:
+                logger.debug("sync_broadcast delivery error (ignored): %s", exc)
+        else:
+            # Fallback: run a fresh event loop if none is running
+            loop.run_until_complete(broadcast(msg))
+    except Exception as exc:
+        logger.debug("sync_broadcast error (ignored): %s", exc)
 
 
 # ---------------------------------------------------------------------------
