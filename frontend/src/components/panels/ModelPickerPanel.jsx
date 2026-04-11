@@ -15,17 +15,33 @@ export default function ModelPickerPanel({
       </div>
 
       <div className="model-list" style={{ flex:1, overflowY:'auto' }}>
-        {availableModels.map(m => (
-          <label key={m.name} className={`model-option ${selectedModel === m.name ? 'selected' : ''}`} onClick={() => setSelectedModel(m.name)}>
-            <input type="radio" name="model" value={m.name} checked={selectedModel === m.name} onChange={() => setSelectedModel(m.name)} />
+        {availableModels.map((m, i) => (
+          <label
+            key={`model-${m.name ?? i}-${i}`}
+            className={`model-option ${selectedModel === m.name ? 'selected' : ''}`}
+            onClick={() => setSelectedModel(m.name)}
+          >
+            <input
+              type="radio"
+              name="model"
+              value={m.name ?? ''}
+              checked={selectedModel === m.name}
+              onChange={() => setSelectedModel(m.name)}
+            />
             <div style={{ flex:1, minWidth:0 }}>
-              <div style={{ fontWeight:700, fontSize:'0.78rem', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{m.name}</div>
-              {m.description && <div style={{ fontSize:'0.62rem', color:'var(--tx-muted)', marginTop:'0.1rem' }}>{m.description}</div>}
+              <div style={{ fontWeight:700, fontSize:'0.78rem', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                {m.name}
+              </div>
+              {m.description && (
+                <div style={{ fontSize:'0.62rem', color:'var(--tx-muted)', marginTop:'0.1rem' }}>
+                  {m.description}
+                </div>
+              )}
               <div style={{ fontSize:'0.59rem', color:'var(--tx-hint)', marginTop:'0.12rem' }}>
                 {m.size_gb ? `${m.size_gb} GB` : ''}
                 {m.pulled === false
-                  ? <span style={{ color:'var(--warning)', marginLeft:4 }}>not pulled</span>
-                  : <span style={{ color:'var(--success)', marginLeft:4 }}>pulled</span>}
+                  ? <span key="not-pulled" style={{ color:'var(--warning)', marginLeft:4 }}>not pulled</span>
+                  : <span key="pulled" style={{ color:'var(--success)', marginLeft:4 }}>pulled</span>}
               </div>
             </div>
             {currentModel === m.name && <span className="badge-active">active</span>}
