@@ -29,6 +29,24 @@ export default function KnowledgeBasePanel({
     </div>
   )
 
+  // Safely extract a renderable answer string from ragResult
+  const ragAnswerText = (() => {
+    if (!ragResult) return null
+    if (typeof ragResult === 'string') return ragResult
+    if (typeof ragResult.answer === 'string') return ragResult.answer
+    if (typeof ragResult.response === 'string') return ragResult.response
+    if (typeof ragResult.text === 'string') return ragResult.text
+    // Fallback: show chunks list if present
+    if (Array.isArray(ragResult.chunks)) {
+      return ragResult.chunks.map((c, i) => {
+        const text = typeof c === 'string' ? c : (c.text || c.content || JSON.stringify(c))
+        return `[${i + 1}] ${text}`
+      }).join('\n\n')
+    }
+    // Last resort: stringify to avoid crashing
+    return JSON.stringify(ragResult, null, 2)
+  })()
+
   return (
     <div className="overlay-panel kb-panel">
       <div className="overlay-header">
@@ -166,10 +184,36 @@ export default function KnowledgeBasePanel({
             disabled={ragLoading || !ragQuery.trim()}>
             {ragLoading ? '⟳ Querying…' : '💬 Run RAG Query'}
           </button>
-          {ragResult && (
+
+          {ragAnswerText && (
             <div style={{ marginTop:12, padding:'10px 14px', background:'rgba(58,127,255,0.05)', border:'1px solid var(--bd-subtle)', borderRadius:8 }}>
               <div style={{ fontSize:10, fontWeight:700, color:'var(--tx-muted)', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:6 }}>Answer</div>
-              <div style={{ fontSize:12, color:'var(--tx-secondary)', lineHeight:1.6, whiteSpace:'pre-wrap' }}>{ragResult.answer || ragResult}</div>
+              <div style={{ fontSize:12, color:'var(--tx-secondary)', lineHeight:1.6, whiteSpace:'pre-wrap' }}>{ragAnswerText}</div>
+            </div>
+          )}
+
+          {/* Show retrieved chunks if available */}
+          {ragResult && Array.isArray(ragResult.chunks) && ragResult.chunks.length > 0 && (
+            <div style={{ marginTop:10 }}>
+              <div style={{ fontSize:10, fontWeight:700, color:'var(--tx-muted)', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:6 }}>
+                Retrieved Chunks ({ragResult.chunks.length})
+              </div>
+              <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
+                {ragResult.chunks.map((c, i) => {
+                  const text   = typeof c === 'string' ? c : (c.text || c.content || '')
+                  const source = typeof c === 'object' ? (c.source || '') : ''
+                  const score  = typeof c === 'object' ? c.score : undefined
+                  return (
+                    <div key={i} style={{ padding:'8px 10px', borderRadius:6, background:'rgba(255,255,255,0.03)', border:'1px solid var(--bd-subtle)' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', marginBottom:3 }}>
+                        <span style={{ fontSize:10, fontWeight:700, color:'var(--tx-primary)' }}>{source || `chunk ${i+1}`}</span>
+                        {score != null && <span style={{ fontSize:10, color:'var(--tx-muted)' }}>score: {score.toFixed(3)}</span>}
+                      </div>
+                      <div style={{ fontSize:11, color:'var(--tx-secondary)', lineHeight:1.5, whiteSpace:'pre-wrap' }}>{text}</div>
+                    </div>
+                  )
+                })}
+              </div>
             </div>
           )}
         </div>
