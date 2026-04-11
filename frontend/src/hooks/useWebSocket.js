@@ -1,19 +1,22 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
-import { WS_URL } from '../utils/constants'
+import { useEffect, useRef, useState } from 'react'
+
+const WS_URL = 'ws://localhost:8000/ws'
 
 /**
- * Manages a WebSocket connection with auto-reconnect and keepalive pings.
+ * Manages a persistent WebSocket connection with auto-reconnect
+ * and a keepalive ping every 20 seconds.
  *
- * @param {object}   options
- * @param {function} options.onMessage  - Called with parsed JSON payload on every incoming message
- * @param {function} [options.onOpen]   - Called once the socket successfully opens
+ * @param {object} opts
+ * @param {function} opts.onMessage  - called with the parsed JSON payload
+ * @param {function} [opts.onOpen]  - called when the socket first opens
  */
-export function useWebSocket({ onMessage, onOpen }) {
+export function useWebSocket({ onMessage, onOpen } = {}) {
   const [connected, setConnected] = useState(false)
-  const wsRef      = useRef(null)
-  // Keep a stable ref to the latest callbacks so the effect closure never goes stale
+  const wsRef       = useRef(null)
   const onMessageRef = useRef(onMessage)
   const onOpenRef    = useRef(onOpen)
+
+  // Keep refs fresh without re-running the effect
   useEffect(() => { onMessageRef.current = onMessage }, [onMessage])
   useEffect(() => { onOpenRef.current    = onOpen    }, [onOpen])
 
@@ -32,8 +35,9 @@ export function useWebSocket({ onMessage, onOpen }) {
       }
 
       ws.onmessage = (e) => {
-        if (cancelled) return
-        try { onMessageRef.current(JSON.parse(e.data)) } catch {}
+        try {
+          onMessageRef.current?.(JSON.parse(e.data))
+        } catch {}
       }
 
       ws.onclose = () => {
@@ -46,25 +50,22 @@ export function useWebSocket({ onMessage, onOpen }) {
     }
 
     connect()
+
     return () => {
       cancelled = true
       wsRef.current?.close()
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, []) // intentionally empty — stable via refs
 
-  // Keepalive — send a ping every 20 s while the socket is open
+  // Keepalive ping
   useEffect(() => {
     const id = setInterval(() => {
-      if (wsRef.current?.readyState === WebSocket.OPEN)
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'ping' }))
+      }
     }, 20_000)
     return () => clearInterval(id)
   }, [])
 
-  const send = useCallback((payload) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN)
-      wsRef.current.send(JSON.stringify(payload))
-  }, [])
-
-  return { connected, wsRef, send }
+  return { connected, wsRef }
 }
