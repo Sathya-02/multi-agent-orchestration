@@ -515,6 +515,7 @@ tokens_in = 0
 tokens_out = 0
 tokens_last = 0
 active_model = os.environ.get("DEFAULT_MODEL", "phi3:mini")
+_start_time = time.time()
 
 
 # ---------------------------------------------------------------------------
@@ -601,48 +602,61 @@ async def websocket_endpoint(ws: WebSocket):
 # ---------------------------------------------------------------------------
 @app.get("/stats")
 def get_stats(current_user=_auth_dep):
+    # ── System metrics via psutil ──────────────────────────────────────────
     try:
         import psutil
-        ram = psutil.virtual_memory()
-        disk = psutil.disk_usage("/")
-        cpu = psutil.cpu_percent(interval=0.1)
-        ram_used_gb = round(ram.used / 1e9, 1)
-        ram_total_gb = round(ram.total / 1e9, 1)
-        ram_free_gb = round(ram.available / 1e9, 1)
-        ram_pct = ram.percent
-        disk_used_gb = round(disk.used / 1e9, 1)
-        disk_total_gb = round(disk.total / 1e9, 1)
-        disk_pct = disk.percent
+        cpu_pct        = psutil.cpu_percent(interval=0.1)
+        ram            = psutil.virtual_memory()
+        disk           = psutil.disk_usage("/")
+        ram_used_gb    = round(ram.used  / 1e9, 1)
+        ram_total_gb   = round(ram.total / 1e9, 1)
+        ram_free_gb    = round(ram.available / 1e9, 1)
+        ram_pct        = round(ram.percent, 1)
+        disk_used_gb   = round(disk.used  / 1e9, 1)
+        disk_total_gb  = round(disk.total / 1e9, 1)
+        disk_pct       = round(disk.percent, 1)
     except ImportError:
-        ram_used_gb = ram_total_gb = ram_free_gb = ram_pct = 0
+        cpu_pct = ram_used_gb = ram_total_gb = ram_free_gb = ram_pct = 0
         disk_used_gb = disk_total_gb = disk_pct = 0
-        cpu = 0
 
+    # ── Ollama info ────────────────────────────────────────────────────────
     ollama_info: Dict = {}
     try:
         import httpx
         r = httpx.get("http://localhost:11434/api/tags", timeout=2)
         if r.status_code == 200:
             models = r.json().get("models", [])
-            ollama_info["model_count"] = len(models)
+            ollama_info["model_count"]   = len(models)
             ollama_info["model_current"] = active_model
     except Exception:
         pass
 
+    # ── Uptime ─────────────────────────────────────────────────────────────
+    uptime_seconds = int(time.time() - _start_time)
+
     return {
-        "ram_used_gb": ram_used_gb,
-        "ram_total_gb": ram_total_gb,
-        "ram_free_gb": ram_free_gb,
-        "ram_pct": ram_pct,
-        "disk_used_gb": disk_used_gb,
+        # CPU
+        "cpu_percent":   cpu_pct,
+        # RAM  (field names match DashboardPanel)
+        "ram_pct":       ram_pct,
+        "ram_used_gb":   ram_used_gb,
+        "ram_total_gb":  ram_total_gb,
+        "ram_free_gb":   ram_free_gb,
+        # Disk
+        "disk_pct":      disk_pct,
+        "disk_used_gb":  disk_used_gb,
         "disk_total_gb": disk_total_gb,
-        "disk_pct": disk_pct,
-        "active_jobs": len([j for j in active_jobs.values() if j.get("status") == "running"]),
-        "total_jobs": len(active_jobs),
-        "tokens_in": tokens_in,
-        "tokens_out": tokens_out,
-        "tokens_last": tokens_last,
-        "ollama": ollama_info,
+        # Jobs
+        "active_jobs":   len([j for j in active_jobs.values() if j.get("status") == "running"]),
+        "total_jobs":    len(active_jobs),
+        # Tokens
+        "tokens_in":     tokens_in,
+        "tokens_out":    tokens_out,
+        "tokens_last":   tokens_last,
+        # Uptime
+        "uptime_seconds": uptime_seconds,
+        # Ollama
+        "ollama":        ollama_info,
     }
 
 
@@ -730,10 +744,6 @@ async def run_job(
         }
     )
 
-    # FIX 2: Capture the running event loop HERE in the async endpoint scope,
-    # NOT inside _run(). In Python 3.10+ asyncio.get_event_loop() inside a
-    # background task or thread can return a different / closed loop, causing
-    # run_coroutine_threadsafe to silently drop all WebSocket messages.
     _loop = asyncio.get_event_loop()
 
     async def _run():
@@ -752,8 +762,6 @@ async def run_job(
                     report_dir=REPORT_DIR,
                     agent_dir=AGENT_DIR,
                     tool_dir=TOOL_DIR,
-                    # FIX 2 (cont): use _loop from outer scope, fire-and-forget
-                    # (no .result() wait — that blocked the thread 2s per message)
                     broadcast_fn=lambda msg: asyncio.run_coroutine_threadsafe(
                         broadcast(msg), _loop
                     ),
