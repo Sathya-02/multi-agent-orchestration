@@ -1,3 +1,5 @@
+import '../../styles/App.css'
+
 export default function ModelPickerPanel({
   availableModels, selectedModel, setSelectedModel,
   currentModel, modelSaving, modelError,

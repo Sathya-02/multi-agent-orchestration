@@ -1,3 +1,5 @@
+import '../../styles/App.css'
+
 export default function KnowledgeBasePanel({
   kbTab, setKbTab, kbEntries, kbConfig, setKbConfig, kbConfigSaving,
   kbUploading, kbSearchQ, setKbSearchQ, kbSearchResult, kbSearching,

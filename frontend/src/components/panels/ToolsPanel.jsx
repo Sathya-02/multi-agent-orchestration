@@ -1,3 +1,5 @@
+import '../../styles/App.css'
+
 export default function ToolsPanel({
   tools, toolTab, setToolTab,
   editingTool, setEditingTool, newToolForm, setNewToolForm,

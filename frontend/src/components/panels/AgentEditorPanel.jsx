@@ -1,3 +1,5 @@
+import '../../styles/App.css'
+
 export default function AgentEditorPanel({
   agents, agentTab, setAgentTab,
   editingAgent, setEditingAgent, newAgentForm, setNewAgentForm,

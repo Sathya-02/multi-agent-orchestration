@@ -1,3 +1,5 @@
+import '../../styles/App.css'
+
 export default function SettingsPanel({
   settingsTab, setSettingsTab,
   tgConfig, setTgConfig, tgSaving, tgTesting, tgTestResult, tgBotSet,
