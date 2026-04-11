@@ -143,7 +143,6 @@ export default function App() {
 
   const pendingSpawns     = spawnRequests.filter(r => !r._resolved)
   const pendingToolSpawns = toolSpawnReqs.filter(r => !r._resolved)
-  const currentPhaseIndex = PHASE_ORDER.indexOf(currentPhase)
 
   // ── Init ─────────────────────────────────────────────────
   useEffect(() => {
@@ -160,9 +159,6 @@ export default function App() {
     return () => clearInterval(id)
   }, [showModelPanel])
 
-  // ── WebSocket (inline — handleMessage must be defined first) ──
-  // handleMessage is defined below via useCallback, then wired up
-  // in a separate useEffect so the closure captures the stable ref.
   const handleMessageRef = useRef(null)
 
   useEffect(() => {
@@ -382,7 +378,6 @@ export default function App() {
     }
   }, [addLog])
 
-  // Keep the ref in sync so the WS onmessage closure always calls latest version
   useEffect(() => { handleMessageRef.current = handleMessage }, [handleMessage])
 
   // ── Model actions ─────────────────────────────────────────
@@ -800,6 +795,7 @@ export default function App() {
   // ── Render ────────────────────────────────────────────────
   return (
     <div className="app-container">
+      {/* Fixed top bars */}
       <AppHeader
         connected={connected} currentModel={currentModel} jobId={jobId}
         showDashboard={showDashboard}     setShowDashboard={setShowDashboard}
@@ -819,6 +815,14 @@ export default function App() {
         fetchBestPractices={fetchBestPractices} fetchProposals={fetchProposals}
       />
 
+      <InfoBar
+        connected={connected} currentModel={currentModel} currentPhase={currentPhase}
+        running={running} stats={stats} jobId={jobId}
+        show3DRoom={show3DRoom} setShow3DRoom={setShow3DRoom}
+        modelBadgeColor={modelBadgeColor}
+      />
+
+      {/* Overlay panels */}
       {showDashboard   && <DashboardPanel stats={stats} currentModel={currentModel} onClose={() => setShowDashboard(false)} />}
       {showUploadPanel && <FileUploadPanel uploads={uploads} uploading={uploading} selectedFiles={selectedFiles} setSelectedFiles={setSelectedFiles} handleFileUpload={handleFileUpload} handleDeleteUpload={handleDeleteUpload} fileInputRef={fileInputRef} onClose={() => setShowUploadPanel(false)} />}
       {showFsPanel     && <FilesystemPanel fsConfig={fsConfig} fsAudit={fsAudit} fsAuditTab={fsAuditTab} setFsAuditTab={setFsAuditTab} fetchFsAudit={fetchFsAudit} newFsPath={newFsPath} setNewFsPath={setNewFsPath} newFsLabel={newFsLabel} setNewFsLabel={setNewFsLabel} newFsRead={newFsRead} setNewFsRead={setNewFsRead} newFsWrite={newFsWrite} setNewFsWrite={setNewFsWrite} newFsEdit={newFsEdit} setNewFsEdit={setNewFsEdit} fsError={fsError} outputDirInput={outputDirInput} setOutputDirInput={setOutputDirInput} handleAddFsAccess={handleAddFsAccess} handleRemoveFsAccess={handleRemoveFsAccess} handleToggleFsFlag={handleToggleFsFlag} handleSetOutputDir={handleSetOutputDir} onClose={() => setShowFsPanel(false)} />}
@@ -828,8 +832,22 @@ export default function App() {
       {showKbPanel     && <KnowledgeBasePanel kbTab={kbTab} setKbTab={setKbTab} kbEntries={kbEntries} kbConfig={kbConfig} setKbConfig={setKbConfig} kbConfigSaving={kbConfigSaving} kbUploading={kbUploading} kbSearchQ={kbSearchQ} setKbSearchQ={setKbSearchQ} kbSearchResult={kbSearchResult} kbSearching={kbSearching} kbPasteText={kbPasteText} setKbPasteText={setKbPasteText} kbPasteName={kbPasteName} setKbPasteName={setKbPasteName} kbPasteTags={kbPasteTags} setKbPasteTags={setKbPasteTags} kbFileRef={kbFileRef} ragQuery={ragQuery} setRagQuery={setRagQuery} ragTopK={ragTopK} setRagTopK={setRagTopK} ragLoading={ragLoading} ragResult={ragResult} handleSaveKbConfig={handleSaveKbConfig} handleKbFileUpload={handleKbFileUpload} handleKbPasteIngest={handleKbPasteIngest} handleDeleteKbSource={handleDeleteKbSource} handleClearKb={handleClearKb} handleKbSearch={handleKbSearch} handleRagQuery={handleRagQuery} onClose={() => setShowKbPanel(false)} />}
       {showModelPanel  && <ModelPickerPanel availableModels={availableModels} selectedModel={selectedModel} setSelectedModel={setSelectedModel} currentModel={currentModel} modelSaving={modelSaving} modelError={modelError} handleModelChange={handleModelChange} onClose={() => setShowModelPanel(false)} />}
 
-      <InfoBar connected={connected} currentModel={currentModel} currentPhase={currentPhase} running={running} stats={stats} jobId={jobId} show3DRoom={show3DRoom} setShow3DRoom={setShow3DRoom} modelBadgeColor={modelBadgeColor} />
+      {/* Main content area — fills remaining height */}
+      <div className={`main-content${show3DRoom ? ' canvas-open' : ''}`}>
+        <SidePanel
+          mode={mode} setMode={setMode}
+          topic={topic} setTopic={setTopic}
+          running={running}
+          selectedFiles={selectedFiles} setShowUploadPanel={setShowUploadPanel}
+          handleRun={handleRun}
+          agents={agents} activeAgent={activeAgent} lastMessages={lastMessages}
+          logs={logs} setLogs={setLogs}
+          result={result} reportFile={reportFile} reportFormat={reportFormat}
+          handleDownload={handleDownload}
+        />
+      </div>
 
+      {/* 3-D Board Room — right-side split pane */}
       {show3DRoom && (
         <div className="canvas-area">
           <div className="canvas-header">
@@ -837,14 +855,14 @@ export default function App() {
             <button className="canvas-close-btn" onClick={() => setShow3DRoom(false)}>✕ Close</button>
           </div>
           <div className="canvas-3d-wrapper">
-            <AgentScene3D activeAgent={activeAgent} agents={agents}
+            <AgentScene3D
+              activeAgent={activeAgent} agents={agents}
               lastMessages={lastMessages} currentPhase={currentPhase}
-              currentWorker={currentWorker} />
+              currentWorker={currentWorker}
+            />
           </div>
         </div>
       )}
-
-      <SidePanel mode={mode} setMode={setMode} topic={topic} setTopic={setTopic} running={running} selectedFiles={selectedFiles} setShowUploadPanel={setShowUploadPanel} handleRun={handleRun} agents={agents} activeAgent={activeAgent} lastMessages={lastMessages} logs={logs} setLogs={setLogs} result={result} reportFile={reportFile} reportFormat={reportFormat} handleDownload={handleDownload} />
     </div>
   )
 }

@@ -4,8 +4,8 @@ import AgentCard    from './AgentCard'
 
 /**
  * SidePanel
- * Left column containing: mode selector, topic/query input, run button,
- * uploaded-file selector (file mode), agent cards, activity feed, and result.
+ * Left column: mode selector, topic input, run button, agent cards,
+ * activity feed, and result/download area.
  */
 export default function SidePanel({
   mode, setMode,
@@ -19,23 +19,25 @@ export default function SidePanel({
 }) {
   return (
     <div className="side-panel">
-      {/* Mode selector */}
-      <div className="mode-selector">
+
+      {/* ── Mode selector ──────────────────────────────────── */}
+      <div className="mode-section">
         {MODES.map(m => (
           <button
             key={m.id}
-            className={`mode-btn ${mode === m.id ? 'active' : ''}`}
+            className={`mode-btn${mode === m.id ? ' active' : ''}`}
             onClick={() => setMode(m.id)}
             disabled={running}
           >
-            <span className="mode-label">{m.label}</span>
-            <span className="mode-desc">{m.desc}</span>
+            <span style={{ display: 'block', fontSize: 11, fontWeight: 700 }}>{m.label}</span>
+            <span style={{ display: 'block', fontSize: 9, opacity: 0.6, marginTop: 2 }}>{m.desc}</span>
           </button>
         ))}
       </div>
 
-      {/* Topic / Query input */}
-      <div className="topic-row">
+      {/* ── Topic / Query input ────────────────────────────── */}
+      <div className="topic-section">
+        <div className="section-heading">Topic / Query</div>
         <textarea
           className="topic-input"
           placeholder={mode === 'query' ? 'Ask a question or give a task…' : 'Enter research topic…'}
@@ -44,52 +46,58 @@ export default function SidePanel({
           disabled={running}
           rows={3}
         />
+
+        {/* File mode shortcut */}
+        {mode === 'file' && (
+          <div style={{ marginBottom: 10 }}>
+            <button className="nav-btn" style={{ width: '100%', justifyContent: 'center' }} onClick={() => setShowUploadPanel(true)}>
+              📎 Select files ({selectedFiles.length} selected)
+            </button>
+          </div>
+        )}
+
+        <button
+          className={`run-btn${running ? ' running' : ''}`}
+          onClick={handleRun}
+          disabled={running || !topic.trim()}
+        >
+          {running ? <><span className="spinner" /> Running…</> : '▶ Run'}
+        </button>
       </div>
 
-      {/* File mode — file picker shortcut */}
-      {mode === 'file' && (
-        <div className="file-mode-row">
-          <button className="nav-btn" onClick={() => setShowUploadPanel(true)}>
-            📎 Select files ({selectedFiles.length} selected)
-          </button>
-        </div>
-      )}
-
-      {/* Run button */}
-      <button
-        className={`run-btn ${running ? 'running' : ''}`}
-        onClick={handleRun}
-        disabled={running || !topic.trim()}
-      >
-        {running ? (
-          <><span className="spinner" /> Running…</>
-        ) : (
-          '▶ Run'
-        )}
-      </button>
-
-      {/* Agent cards — pass full agent object; AgentCard handles both APIs */}
+      {/* ── Agent cards ────────────────────────────────────── */}
       {agents.length > 0 && (
-        <div className="agent-cards">
-          {agents.map(agent => (
-            <AgentCard
-              key={agent.id}
-              agent={agent}
-              active={activeAgent === agent.id}
-              lastMessage={lastMessages[agent.id]}
-            />
-          ))}
+        <div className="agents-section">
+          <div className="section-heading">Agents</div>
+          <div className="agents-scroll">
+            {agents.map(agent => (
+              <AgentCard
+                key={agent.id}
+                agent={agent}
+                active={activeAgent === agent.id}
+                lastMessage={lastMessages[agent.id]}
+              />
+            ))}
+          </div>
         </div>
       )}
 
-      {/* Activity feed */}
-      <ActivityFeed logs={logs} onClear={() => setLogs([])} />
+      {/* ── Activity feed ──────────────────────────────────── */}
+      <div className="feed-section">
+        <div className="feed-header">
+          <span className="section-heading">Activity</span>
+          {logs.length > 0 && (
+            <button className="feed-clear-btn" onClick={() => setLogs([])}>Clear</button>
+          )}
+        </div>
+        <ActivityFeed logs={logs} agents={agents} />
+      </div>
 
-      {/* Result / Download */}
+      {/* ── Result / Download ──────────────────────────────── */}
       {result && (
         <div className="result-box">
           <div className="result-header">
-            <span>✅ Report ready</span>
+            <span className="section-heading">✅ Report ready</span>
             {reportFile && (
               <button className="download-btn" onClick={handleDownload}>
                 ⬇️ Download .{reportFormat}
@@ -99,6 +107,7 @@ export default function SidePanel({
           <pre className="result-content">{result}</pre>
         </div>
       )}
+
     </div>
   )
 }

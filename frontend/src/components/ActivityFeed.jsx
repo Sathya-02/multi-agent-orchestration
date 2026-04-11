@@ -41,7 +41,6 @@ export default function ActivityFeed({ logs, agents }) {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [logs])
 
-  // Build colour + label maps that include custom agents
   const agentColorMap = { ...BUILTIN_COLORS }
   const agentLabelMap = { ...BUILTIN_LABELS }
   if (agents) {
@@ -58,21 +57,19 @@ export default function ActivityFeed({ logs, agents }) {
       )}
 
       {logs.map((log, i) => {
-        const color      = agentColorMap[log.agent] || agentColorMap.system
-        const label      = log.label || agentLabelMap[log.agent] || log.agent
-        const message    = cleanMessage(log.message)
-        const isPhase    = log.phase === true
-        const isResult   = log.taskResult === true
-        const isError    = message.startsWith('❌')
-        const isDone     = message.startsWith('✅')
+        const color   = agentColorMap[log.agent] || agentColorMap.system
+        const label   = log.label || agentLabelMap[log.agent] || log.agent
+        const message = cleanMessage(log.message)
+        const isPhase  = log.phase === true
+        const isResult = log.taskResult === true
+        const isError  = message.startsWith('❌')
+        const isDone   = message.startsWith('✅')
 
         if (!message) return null
 
-        // ── Phase banner ────────────────────────────────────────────────
         if (isPhase) {
           return (
-            <div key={i} className="feed-phase-banner"
-              style={{ borderLeftColor: color }}>
+            <div key={i} className="feed-phase-banner" style={{ borderLeftColor: color }}>
               <div className="feed-phase-header">
                 <span className="feed-agent-label" style={{ color }}>{label}</span>
                 {log.ts && <span className="feed-time">{formatTime(log.ts)}</span>}
@@ -82,13 +79,10 @@ export default function ActivityFeed({ logs, agents }) {
           )
         }
 
-        // ── Task result block ────────────────────────────────────────────
         if (isResult) {
-          // Strip "📋 Task result: " prefix for cleaner display
           const body = message.replace(/^📋 Task result:\s*/i, '')
           return (
-            <div key={i} className="feed-item feed-item-result"
-              style={{ borderLeftColor: color }}>
+            <div key={i} className="feed-item feed-item-result">
               <div className="feed-bar" style={{ background: color }} />
               <div className="feed-content">
                 <div className="feed-row-top">
@@ -102,10 +96,8 @@ export default function ActivityFeed({ logs, agents }) {
           )
         }
 
-        // ── Regular item ─────────────────────────────────────────────────
         return (
-          <div key={i}
-            className={`feed-item${isError?' feed-item-error':''}${isDone?' feed-item-done':''}`}>
+          <div key={i} className={`feed-item${isError ? ' feed-item-error' : ''}${isDone ? ' feed-item-done' : ''}`}>
             <div className="feed-bar" style={{ background: color }} />
             <div className="feed-content">
               <div className="feed-row-top">
