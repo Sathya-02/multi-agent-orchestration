@@ -7,16 +7,32 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // Proxy API calls to backend during development
-      '/api': {
-        target: 'http://localhost:8000',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
-      },
+      // ── WebSocket ──────────────────────────────────────────────────────
       '/ws': {
         target: 'ws://localhost:8000',
         ws: true,
+        changeOrigin: true,
       },
+      // ── All backend REST routes ────────────────────────────────────────
+      // Catches: /run /stats /models /uploads /upload /reports
+      //          /agents /tools /kb /fs-config /telegram /self-improver
+      //          /web-search /spawns /tool-spawns /spawn-settings
+      '/run':            { target: 'http://localhost:8000', changeOrigin: true },
+      '/stats':          { target: 'http://localhost:8000', changeOrigin: true },
+      '/models':         { target: 'http://localhost:8000', changeOrigin: true },
+      '/uploads':        { target: 'http://localhost:8000', changeOrigin: true },
+      '/upload':         { target: 'http://localhost:8000', changeOrigin: true },
+      '/reports':        { target: 'http://localhost:8000', changeOrigin: true },
+      '/agents':         { target: 'http://localhost:8000', changeOrigin: true },
+      '/tools':          { target: 'http://localhost:8000', changeOrigin: true },
+      '/tool-spawns':    { target: 'http://localhost:8000', changeOrigin: true },
+      '/spawn-settings': { target: 'http://localhost:8000', changeOrigin: true },
+      '/spawns':         { target: 'http://localhost:8000', changeOrigin: true },
+      '/kb':             { target: 'http://localhost:8000', changeOrigin: true },
+      '/fs-config':      { target: 'http://localhost:8000', changeOrigin: true },
+      '/telegram':       { target: 'http://localhost:8000', changeOrigin: true },
+      '/self-improver':  { target: 'http://localhost:8000', changeOrigin: true },
+      '/web-search':     { target: 'http://localhost:8000', changeOrigin: true },
     },
   },
   build: {
@@ -24,10 +40,10 @@ export default defineConfig({
     sourcemap: false,
   },
   define: {
-    // API URL can be overridden at build time via VITE_API_URL env var
-    // e.g. VITE_API_URL=https://api.yourdomain.com npm run build
+    // Production API URL — override via VITE_API_URL env var at build time
+    // e.g.  VITE_API_URL=https://api.yourdomain.com npm run build
     __API_URL__: JSON.stringify(
-      process.env.VITE_API_URL || 'http://localhost:8000'
+      process.env.VITE_API_URL || ''
     ),
   },
 })
