@@ -18,6 +18,14 @@ Fix history:
      produce a Final Answer without looping.
  10. max_iter=4, num_ctx=4096, num_predict=512, temperature=0.2 to prevent
      Ollama silent hangs and reduce loop-backs on small models.
+ 11. [FIX] step_callback now handles item.agent as Agent object (not just str)
+     — extracts .role attribute directly so per-agent attribution is correct.
+ 12. [FIX] broadcast_fn lambda wrapped in try/except so closed-loop errors
+     surface in logs instead of being swallowed silently.
+ 13. [FIX] completion broadcast only fires for agents that actually ran tasks,
+     not for every active agent regardless of participation.
+ 14. [FIX] deprecated asyncio.get_event_loop() replaced with get_running_loop()
+     in the broadcast lambda passed to run_in_executor.
 """
 import logging
 import time
@@ -178,10 +186,14 @@ def _make_step_callback(
       - A single AgentFinish / AgentAction object
       - A list of the above
 
-    We extract the agent role from the item, map it back to the agent id,
-    then emit agent_working + agent_activity events.
+    item.agent may be:
+      a) A plain role string  (e.g. 'Research Coordinator')
+      b) An Agent object      (has a .role attribute)
+      c) None / empty
+
+    We handle all three cases and map back to the agent_id.
     """
-    # Build reverse map: role string -> agent_id
+    # Build reverse map: role string (lower) -> agent_id
     role_to_id: dict[str, str] = {}
     for aid, agent in agents_map.items():
         role_to_id[agent.role.lower()] = aid
@@ -192,19 +204,27 @@ def _make_step_callback(
     def _cb(step_output: Any) -> None:
         items = step_output if isinstance(step_output, list) else [step_output]
         for item in items:
-            # Try to detect which agent produced this step
+            # --- FIX #3: extract role from Agent object OR string ----------
             agent_str = ""
             try:
-                agent_str = str(getattr(item, "agent", "") or "").strip().lower()
+                raw_agent = getattr(item, "agent", None)
+                if raw_agent is None:
+                    agent_str = ""
+                elif hasattr(raw_agent, "role"):
+                    # item.agent is an Agent object — use .role directly
+                    agent_str = str(raw_agent.role).strip().lower()
+                else:
+                    agent_str = str(raw_agent).strip().lower()
             except Exception:
                 pass
 
             if agent_str:
+                # Exact match first
                 matched = role_to_id.get(agent_str)
                 if matched:
                     state["current"] = matched
                 else:
-                    # Partial match
+                    # Partial / substring match as fallback
                     for role, aid in role_to_id.items():
                         if agent_str in role or role in agent_str:
                             state["current"] = aid
@@ -230,7 +250,7 @@ def _make_step_callback(
             if not text:
                 continue
             if len(text) > 350:
-                text = text[:347] + "…"
+                text = text[:347] + "\u2026"
 
             _emit_working(broadcast_fn, aid, label, text)
             _emit_activity(broadcast_fn, aid, label, text, phase=False)
@@ -252,10 +272,10 @@ def _make_task_callback(
             else:
                 text = str(task_output).strip()
             if len(text) > 400:
-                text = text[:397] + "…"
+                text = text[:397] + "\u2026"
             _emit_activity(
                 broadcast_fn, agent_id, label,
-                f"✅ {label} task done: {text[:200]}",
+                f"\u2705 {label} task done: {text[:200]}",
                 phase=False, task_result=True,
             )
         except Exception as exc:
@@ -286,7 +306,7 @@ def run_crew(
     report_dir = report_dir or Path("reports")
     report_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("run_crew started — topic=%r mode=%s model=%s", topic, mode, model)
+    logger.info("run_crew started \u2014 topic=%r mode=%s model=%s", topic, mode, model)
 
     # ---- Build agents -------------------------------------------------------
     agents_map = build_agents(mode=mode)
@@ -305,7 +325,7 @@ def run_crew(
 
     # ---- Emit "queued" activity for every agent ----------------------------
     for aid, label in labels_map.items():
-        _emit_activity(broadcast_fn, aid, label, f"🟡 {label} queued", phase=True)
+        _emit_activity(broadcast_fn, aid, label, f"\U0001f7e1 {label} queued", phase=True)
 
     # ---- Build tasks via tasks_crew (single source of truth) ---------------
     tasks = build_tasks(
@@ -315,12 +335,15 @@ def run_crew(
         uploaded_files = uploaded_files,
     )
 
-    # Attach per-task callback so we emit a completion event for each task
+    # ---- Attach per-task callback so we emit a completion event per task ---
     for task in tasks:
         if task.agent:
             aid   = next((k for k, v in agents_map.items() if v is task.agent), "")
             label = labels_map.get(aid, str(task.agent.role))
             task.callback = _make_task_callback(broadcast_fn, aid, label)
+
+    # ---- Collect which Agent objects actually have tasks (for completion) --
+    agents_with_tasks: set = {task.agent for task in tasks if task.agent is not None}
 
     # ---- Ordered agent list for step_callback ------------------------------
     available_ids = list(agents_map.keys())
@@ -336,10 +359,10 @@ def run_crew(
         first_label = labels_map.get(first_aid, first_aid)
         _emit_activity(
             broadcast_fn, first_aid, first_label,
-            f"🔍 {first_label} is starting…",
+            f"\U0001f50d {first_label} is starting\u2026",
             phase=True,
         )
-        _emit_working(broadcast_fn, first_aid, first_label, "Thinking…")
+        _emit_working(broadcast_fn, first_aid, first_label, "Thinking\u2026")
 
     # ---- Build and kick off the crew ---------------------------------------
     step_cb = _make_step_callback(broadcast_fn, agents_map, labels_map, ordered_ids)
@@ -353,7 +376,7 @@ def run_crew(
         verbose      = True,
     )
 
-    logger.info("Kicking off crew — %d agents / %d tasks", len(agent_list), len(tasks))
+    logger.info("Kicking off crew \u2014 %d agents / %d tasks", len(agent_list), len(tasks))
     result_obj  = crew.kickoff()
     result_text = str(result_obj) if result_obj else "No output produced."
 
@@ -363,13 +386,14 @@ def run_crew(
     report_path.write_text(result_text, encoding="utf-8")
     logger.info("Report saved: %s", report_path)
 
-    # ---- Emit completion for all agents ------------------------------------
+    # ---- FIX #6: Emit completion ONLY for agents that actually ran tasks ---
     for aid in ordered_ids:
-        label = labels_map.get(aid, aid)
-        _emit_activity(
-            broadcast_fn, aid, label,
-            f"✅ {label} complete",
-            phase=False, task_result=True,
-        )
+        if agents_map.get(aid) in agents_with_tasks:
+            label = labels_map.get(aid, aid)
+            _emit_activity(
+                broadcast_fn, aid, label,
+                f"\u2705 {label} complete",
+                phase=False, task_result=True,
+            )
 
     return result_text, report_filename, "md", 0, 0
