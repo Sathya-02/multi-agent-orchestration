@@ -1,3 +1,5 @@
+import '../styles/App.css'
+
 /**
  * AppHeader
  * Top navigation bar. Receives all panel-toggle state + metadata as props

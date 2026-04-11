@@ -1,3 +1,5 @@
+import '../../styles/App.css'
+
 export default function FilesystemPanel({
   fsConfig, fsAudit, fsAuditTab, setFsAuditTab, fetchFsAudit,
   newFsPath, setNewFsPath, newFsLabel, setNewFsLabel,

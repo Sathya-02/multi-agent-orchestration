@@ -1,3 +1,4 @@
+import '../styles/App.css'
 import { MODES } from '../utils/constants'
 import ActivityFeed from './ActivityFeed'
 import AgentCard    from './AgentCard'

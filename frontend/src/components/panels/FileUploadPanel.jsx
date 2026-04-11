@@ -1,3 +1,4 @@
+import '../../styles/App.css'
 import { useRef } from 'react'
 import { fileIcon, formatBytes } from '../../utils/helpers'
 

@@ -1,3 +1,4 @@
+import '../styles/App.css'
 import { PHASE_ORDER, PHASE_META } from '../utils/constants'
 
 /**

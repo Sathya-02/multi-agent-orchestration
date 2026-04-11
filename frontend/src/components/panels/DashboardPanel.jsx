@@ -1,3 +1,5 @@
+import '../../styles/App.css'
+
 export default function DashboardPanel({ stats, currentModel, onClose }) {
   const cpu  = stats?.cpu_percent ?? 0
   const ram  = stats?.memory_percent ?? 0
