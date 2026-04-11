@@ -68,7 +68,7 @@ export default function SidePanel({
         )}
       </button>
 
-      {/* Agent cards */}
+      {/* Agent cards — pass full agent object; AgentCard handles both APIs */}
       {agents.length > 0 && (
         <div className="agent-cards">
           {agents.map(agent => (
