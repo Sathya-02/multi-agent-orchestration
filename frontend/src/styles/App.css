@@ -59,7 +59,6 @@ body{
   z-index:50;
   flex-shrink:0;
   gap:8px;
-  /* FIX: was missing position — caused header to not stick to top */
   position:sticky;
   top:0;
   width:100%;
@@ -74,7 +73,6 @@ body{
   display:flex;
   align-items:center;
   gap:7px;
-  /* FIX: prevent title from collapsing on narrow screens */
   flex-shrink:0;
   min-width:max-content;
 }
@@ -83,7 +81,6 @@ body{
   align-items:center;
   gap:6px;
   flex-shrink:0;
-  /* FIX: allow horizontal scroll when nav items overflow on narrow screens */
   overflow-x:auto;
   scrollbar-width:none;
 }
@@ -128,7 +125,6 @@ body{
   animation:pulse 2s infinite;
   white-space:nowrap;
   letter-spacing:.02em;
-  /* FIX: prevent spawn alert buttons from being squeezed */
   flex-shrink:0;
 }
 .status-dot{width:7px;height:7px;border-radius:50%;background:#22c55e;animation:pulse 2s infinite;flex-shrink:0}
@@ -146,7 +142,6 @@ body{
   flex-shrink: 0;
   z-index: 45;
   gap: 12px;
-  /* FIX: was missing position — infobar could scroll away */
   position:sticky;
   top:var(--h-header);
   width:100%;
@@ -288,19 +283,21 @@ body{
 .phase-step.active .phase-name { color: #2255cc; animation: blink 1.3s infinite; }
 .phase-step.done .phase-name { color: #16883a; }
 
-/* ═══ MAIN CONTENT GRID ═══ */
+/* ═══ MAIN CONTENT — full width ═══ */
 .main-content {
-  display: grid;
-  grid-template-columns: 1fr 380px;
-  grid-template-rows: 1fr;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
   height: calc(100vh - var(--h-chrome));
   overflow: hidden;
   transition: margin-right 0.3s ease;
 }
+/* .side-panel fills the entire main-content area */
 .side-panel {
-  grid-column: 1;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
   background: var(--bg-panel);
-  border-right: 1px solid var(--bd-subtle);
   display: flex;
   flex-direction: column;
   overflow-y: auto;
@@ -308,12 +305,15 @@ body{
   scrollbar-width: thin;
 }
 .activity-column {
+  flex: 1;
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
   height: 100%;
+  width: 100%;
 }
+/* When 3D boardroom is open, shrink main area to leave room for canvas */
 .main-content.canvas-open {
   margin-right: min(40vw, 520px);
 }
@@ -648,7 +648,6 @@ body{
   padding: 4px 10px;
   background: rgba(58,127,255,0.08);
   border: 1px solid var(--bd-mid);
-  /* FIX: use --badge-color with fallback for border */
   border-color: var(--badge-color, var(--bd-mid));
   border-radius: 18px;
   color: var(--tx-primary);
