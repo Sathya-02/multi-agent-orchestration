@@ -118,7 +118,8 @@ export default function App() {
 
   // ── Knowledge Base / RAG state ───────────────────────────
   const [kbEntries,      setKbEntries]      = useState({ entries:[], sources:[], count:0 })
-  const [kbConfig,       setKbConfig]       = useState({ enabled:true, embed_model:'nomic-embed-text', chunk_size:400, chunk_overlap:80, top_k:4, min_score:0.25, use_ollama_embed:true })
+  // FIX: use_ollama_embed default changed to false (safer default — no embed server assumed)
+  const [kbConfig,       setKbConfig]       = useState({ enabled:true, embed_model:'nomic-embed-text', chunk_size:400, chunk_overlap:80, top_k:4, min_score:0.25, use_ollama_embed:false })
   const [kbConfigSaving, setKbConfigSaving] = useState(false)
   const [kbUploading,    setKbUploading]    = useState(false)
   const [kbSearchQ,      setKbSearchQ]      = useState('')
@@ -707,8 +708,9 @@ export default function App() {
   const handleSaveKbConfig = async () => {
     setKbConfigSaving(true)
     try {
+      // FIX: was POST — backend route is PUT /kb/config
       await fetch(`${API_URL}/kb/config`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(kbConfig),
       })
       addLog('system', '📚 KB', '✅ Knowledge base config saved')
@@ -768,8 +770,9 @@ export default function App() {
     setKbSearching(true); setKbSearchResult(null)
     try {
       const d = await fetch(`${API_URL}/kb/search?q=${encodeURIComponent(kbSearchQ)}`).then(r => r.json())
-      setKbSearchResult(d.result || d.error)
-    } catch (e) { setKbSearchResult(`Error: ${e}`) } finally { setKbSearching(false) }
+      // FIX: backend returns { results: [...] } — was incorrectly reading d.result
+      setKbSearchResult(d.results ?? d.result ?? d.error ?? [])
+    } catch (e) { setKbSearchResult([]) } finally { setKbSearching(false) }
   }
 
   const handleRagQuery = async () => {
