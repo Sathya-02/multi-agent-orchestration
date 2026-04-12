@@ -36,16 +36,19 @@ export default function KnowledgeBasePanel({
     if (typeof ragResult.answer === 'string') return ragResult.answer
     if (typeof ragResult.response === 'string') return ragResult.response
     if (typeof ragResult.text === 'string') return ragResult.text
-    // Fallback: show chunks list if present
     if (Array.isArray(ragResult.chunks)) {
       return ragResult.chunks.map((c, i) => {
         const text = typeof c === 'string' ? c : (c.text || c.content || JSON.stringify(c))
         return `[${i + 1}] ${text}`
       }).join('\n\n')
     }
-    // Last resort: stringify to avoid crashing
     return JSON.stringify(ragResult, null, 2)
   })()
+
+  // FIX Bug 4: kbSearchResult is the array itself (set from d.result in App.jsx),
+  // not an object with a .results key. KnowledgeBasePanel was reading
+  // kbSearchResult.results which was always undefined → empty list shown.
+  const searchResults = Array.isArray(kbSearchResult) ? kbSearchResult : []
 
   return (
     <div className="overlay-panel kb-panel">
@@ -75,7 +78,7 @@ export default function KnowledgeBasePanel({
           </div>
           {sources.length === 0 && <div className="empty-hint">Knowledge base is empty. Use Ingest to add documents.</div>}
           {sources.map((src, i) => (
-            <div key={`${src.name}-${i}`} className="kb-source-card">
+            <div key={`${src.name || src.source}-${i}`} className="kb-source-card">
               <span style={{ fontSize:18 }}>📄</span>
               <div style={{ flex:1, minWidth:0 }}>
                 <div className="kb-source-name">{src.name || src.source}</div>
@@ -85,7 +88,7 @@ export default function KnowledgeBasePanel({
                   </div>
                 )}
               </div>
-              <span className="kb-source-meta">{src.chunk_count || '?'} chunks</span>
+              <span className="kb-source-meta">{src.chunks || src.chunk_count || '?'} chunks</span>
               <button className="del-btn" onClick={() => handleDeleteKbSource(src.name || src.source)} title="Delete source">🗑</button>
             </div>
           ))}
@@ -95,7 +98,6 @@ export default function KnowledgeBasePanel({
       {/* ── INGEST ── */}
       {kbTab === 'ingest' && (
         <div className="kb-body">
-          {/* File upload */}
           <div className="settings-section-title">Upload File</div>
           <input ref={kbFileRef} type="file" style={{ display:'none' }}
             accept=".pdf,.txt,.md,.docx,.csv,.json"
@@ -106,7 +108,6 @@ export default function KnowledgeBasePanel({
             {kbUploading ? '⟳ Ingesting…' : '📂 Choose File to Ingest'}
           </button>
 
-          {/* Paste text */}
           <div className="settings-section-title">Paste Text</div>
           <Row label="Name">
             <input className="topic-input"
@@ -147,9 +148,9 @@ export default function KnowledgeBasePanel({
               {kbSearching ? '…' : '🔍'}
             </button>
           </div>
-          {kbSearchResult && (
+          {kbSearchResult !== null && (
             <div style={{ display:'flex', flexDirection:'column', gap:8 }}>
-              {(kbSearchResult.results || []).map((r, i) => (
+              {searchResults.map((r, i) => (
                 <div key={i} style={{ padding:'9px 11px', borderRadius:7, background:'rgba(58,127,255,0.05)', border:'1px solid var(--bd-subtle)' }}>
                   <div style={{ display:'flex', justifyContent:'space-between', marginBottom:4 }}>
                     <span style={{ fontSize:11, fontWeight:700, color:'var(--tx-primary)' }}>{r.source || '?'}</span>
@@ -158,7 +159,7 @@ export default function KnowledgeBasePanel({
                   <div style={{ fontSize:11, color:'var(--tx-secondary)', lineHeight:1.5, whiteSpace:'pre-wrap' }}>{r.text}</div>
                 </div>
               ))}
-              {(kbSearchResult.results || []).length === 0 && (
+              {searchResults.length === 0 && (
                 <div className="empty-hint">No results found.</div>
               )}
             </div>
@@ -192,7 +193,6 @@ export default function KnowledgeBasePanel({
             </div>
           )}
 
-          {/* Show retrieved chunks if available */}
           {ragResult && Array.isArray(ragResult.chunks) && ragResult.chunks.length > 0 && (
             <div style={{ marginTop:10 }}>
               <div style={{ fontSize:10, fontWeight:700, color:'var(--tx-muted)', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:6 }}>
@@ -253,7 +253,7 @@ export default function KnowledgeBasePanel({
           </Row>
           <Row label="Min Score (0–1)">
             <input className="topic-input" type="number" min={0} max={1} step={0.05}
-              value={kbConfig.min_score || 0.25}
+              value={kbConfig.min_score ?? 0}
               onChange={e => setKbConfig({ ...kbConfig, min_score: +e.target.value })} />
           </Row>
           <div className="si-row">

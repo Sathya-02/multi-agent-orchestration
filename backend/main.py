@@ -1,8 +1,5 @@
 # ---------------------------------------------------------------------------
 # Disable CrewAI / OpenTelemetry telemetry BEFORE any crewai import.
-# Without this, crew.kickoff() opens an HTTP span to telemetry.crewai.com:4319
-# which times out (~10 s) on offline/local setups, making the coordinator
-# appear frozen.
 # ---------------------------------------------------------------------------
 import os
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
@@ -71,6 +68,7 @@ try:
         load_kb_config,
         save_kb_config,
         clear_store,
+        reindex_store,
         search as kb_search,
         KB_DIR,
     )
@@ -376,9 +374,10 @@ class RunRequest(BaseModel):
     uploaded_files: List[str] = []
 
 
+# FIX Bug 2: was { source: str } but App.jsx sends { source_name: str }
 class KBIngestText(BaseModel):
     text: str
-    source: str = "paste"
+    source_name: str = "paste"   # matches App.jsx field name
     tags: List[str] = []
 
 
@@ -389,7 +388,7 @@ class KBConfigUpdate(BaseModel):
     top_k: Optional[int] = None
     min_score: Optional[float] = None
     embed_model: Optional[str] = None
-    use_ollama_embed: Optional[bool] = None
+    use_ollama_embed: Optional[bool] = None   # FIX Bug 3: was missing
 
 
 class AgentCreate(BaseModel):
@@ -557,14 +556,9 @@ async def broadcast(msg: dict):
 
 
 # ---------------------------------------------------------------------------
-# sync_broadcast — callable from synchronous tool code (e.g. SpawnAgentTool,
-# SpawnToolTool) that runs in a background thread outside the event loop.
+# sync_broadcast
 # ---------------------------------------------------------------------------
 def sync_broadcast(msg: dict) -> None:
-    """
-    Thread-safe synchronous wrapper around the async broadcast() coroutine.
-    Fire-and-forget: schedules on the running event loop without blocking.
-    """
     try:
         loop = asyncio.get_event_loop()
         if loop.is_running():
@@ -602,7 +596,6 @@ async def websocket_endpoint(ws: WebSocket):
 # ---------------------------------------------------------------------------
 @app.get("/stats")
 def get_stats(current_user=_auth_dep):
-    # ── System metrics via psutil ──────────────────────────────────────────
     try:
         import psutil
         cpu_pct        = psutil.cpu_percent(interval=0.1)
@@ -619,7 +612,6 @@ def get_stats(current_user=_auth_dep):
         cpu_pct = ram_used_gb = ram_total_gb = ram_free_gb = ram_pct = 0
         disk_used_gb = disk_total_gb = disk_pct = 0
 
-    # ── Ollama info ────────────────────────────────────────────────────────
     ollama_info: Dict = {}
     try:
         import httpx
@@ -631,31 +623,23 @@ def get_stats(current_user=_auth_dep):
     except Exception:
         pass
 
-    # ── Uptime ─────────────────────────────────────────────────────────────
     uptime_seconds = int(time.time() - _start_time)
 
     return {
-        # CPU
         "cpu_percent":   cpu_pct,
-        # RAM  (field names match DashboardPanel)
         "ram_pct":       ram_pct,
         "ram_used_gb":   ram_used_gb,
         "ram_total_gb":  ram_total_gb,
         "ram_free_gb":   ram_free_gb,
-        # Disk
         "disk_pct":      disk_pct,
         "disk_used_gb":  disk_used_gb,
         "disk_total_gb": disk_total_gb,
-        # Jobs
         "active_jobs":   len([j for j in active_jobs.values() if j.get("status") == "running"]),
         "total_jobs":    len(active_jobs),
-        # Tokens
         "tokens_in":     tokens_in,
         "tokens_out":    tokens_out,
         "tokens_last":   tokens_last,
-        # Uptime
         "uptime_seconds": uptime_seconds,
-        # Ollama
         "ollama":        ollama_info,
     }
 
@@ -1022,12 +1006,13 @@ def kb_update_config(body: KBConfigUpdate, current_user=_auth_dep):
     if not RAG_ENABLED:
         raise HTTPException(status_code=404, detail="RAG disabled")
     cfg = load_kb_config()
-    if body.enabled       is not None: cfg["enabled"]        = body.enabled
-    if body.chunk_size    is not None: cfg["chunk_size"]      = body.chunk_size
-    if body.chunk_overlap is not None: cfg["chunk_overlap"]   = body.chunk_overlap
-    if body.top_k         is not None: cfg["top_k"]           = body.top_k
-    if body.min_score     is not None: cfg["min_score"]       = body.min_score
-    if body.embed_model   is not None: cfg["embed_model"]     = body.embed_model
+    if body.enabled          is not None: cfg["enabled"]          = body.enabled
+    if body.chunk_size       is not None: cfg["chunk_size"]        = body.chunk_size
+    if body.chunk_overlap    is not None: cfg["chunk_overlap"]     = body.chunk_overlap
+    if body.top_k            is not None: cfg["top_k"]             = body.top_k
+    if body.min_score        is not None: cfg["min_score"]         = body.min_score
+    if body.embed_model      is not None: cfg["embed_model"]       = body.embed_model
+    if body.use_ollama_embed is not None: cfg["use_ollama_embed"]  = body.use_ollama_embed  # FIX Bug 3
     save_kb_config(cfg)
     return cfg
 
@@ -1036,7 +1021,8 @@ def kb_update_config(body: KBConfigUpdate, current_user=_auth_dep):
 def kb_ingest_text_endpoint(body: KBIngestText, current_user=_auth_dep):
     if not RAG_ENABLED:
         raise HTTPException(status_code=404, detail="RAG disabled")
-    result = ingest_text(body.text, body.source, tags=body.tags)
+    # FIX Bug 2: use body.source_name (was body.source)
+    result = ingest_text(body.text, body.source_name, tags=body.tags)
     return result
 
 
@@ -1059,8 +1045,18 @@ def kb_delete_entry(entry_id: str, current_user=_auth_dep):
     return {"deleted": entry_id}
 
 
+# FIX Bug 1a: canonical route (singular)
 @app.delete("/kb/source/{source}")
 def kb_delete_source(source: str, current_user=_auth_dep):
+    if not RAG_ENABLED:
+        raise HTTPException(status_code=404, detail="RAG disabled")
+    removed = delete_source(source)
+    return {"deleted": source, "chunks_removed": removed}
+
+
+# FIX Bug 1b: alias route (plural) — App.jsx calls /kb/sources/:source
+@app.delete("/kb/sources/{source}")
+def kb_delete_source_alias(source: str, current_user=_auth_dep):
     if not RAG_ENABLED:
         raise HTTPException(status_code=404, detail="RAG disabled")
     removed = delete_source(source)
@@ -1078,12 +1074,13 @@ def kb_clear(current_user=_auth_dep):
 @app.get("/kb/search")
 def kb_search_endpoint(q: str = Query(...), current_user=_auth_dep):
     if not RAG_ENABLED:
-        return {"result": [], "error": "RAG disabled"}
+        return {"results": [], "error": "RAG disabled"}
     try:
         results = retrieve(q)
-        return {"result": results}
+        # FIX Bug 4: return key is 'results' to match KnowledgeBasePanel.jsx
+        return {"results": results}
     except Exception as e:
-        return {"result": [], "error": str(e)}
+        return {"results": [], "error": str(e)}
 
 
 @app.post("/kb/query")
@@ -1095,6 +1092,14 @@ def kb_rag_query(body: RAGQuery, current_user=_auth_dep):
         return {"chunks": chunks, "query": body.query}
     except Exception as e:
         return {"chunks": [], "error": str(e)}
+
+
+@app.post("/kb/reindex")
+def kb_reindex(current_user=_auth_dep):
+    """Re-embed all store entries with the current embedding function."""
+    if not RAG_ENABLED:
+        raise HTTPException(status_code=404, detail="RAG disabled")
+    return reindex_store()
 
 
 # ---------------------------------------------------------------------------
