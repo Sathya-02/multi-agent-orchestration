@@ -8,7 +8,7 @@ Architecture:
   • Documents ingested → chunked → embedded via Ollama nomic-embed-text
   • Vectors stored in-memory + persisted to rag_store.json on disk
   • Cosine similarity retrieval — top-k chunks returned to agents
-  • Falls back to keyword (BM25-style TF) if Ollama embedding is unavailable
+  • Falls back to keyword (djb2 TF) if Ollama embedding is unavailable
 
 Supported ingestion formats: .txt .md .pdf .docx .csv .json .html .log
 
@@ -16,13 +16,6 @@ Usage by agents:
   Tool name:  knowledge_base_search
   Input:      a query string
   Returns:    top-k relevant chunks with source metadata
-
-UI:
-  📚 Knowledge Base panel in Settings
-  - Upload / ingest documents
-  - View all KB entries
-  - Delete individual entries
-  - Config: embedding model, chunk size, top-k
 """
 import json, re, math, time, uuid, logging
 from pathlib import Path
@@ -31,6 +24,7 @@ from typing import Optional
 from settings import (
     RAG_ENABLED, RAG_EMBED_MODEL, RAG_CHUNK_SIZE,
     RAG_CHUNK_OVERLAP, RAG_TOP_K, RAG_MIN_SCORE, RAG_USE_OLLAMA_EMBED,
+    RAG_CONFIG_FILE,
 )
 
 logger = logging.getLogger("rag_engine")
@@ -39,18 +33,22 @@ logger = logging.getLogger("rag_engine")
 BASE_DIR    = Path(__file__).parent
 KB_STORE    = BASE_DIR / "rag_store.json"
 KB_DIR      = BASE_DIR / "knowledge_base"
-KB_CFG_PATH = BASE_DIR / "rag_config.json"
+# FIX: was BASE_DIR/"rag_config.json" — mismatched settings.py's
+# RAG_CONFIG_FILE = BASE_DIR/"data"/"rag_config.json".
+# UI config saves (min_score, top_k etc.) were written to data/rag_config.json
+# but load_kb_config() read from rag_config.json — discarded on every restart.
+KB_CFG_PATH = RAG_CONFIG_FILE
 KB_DIR.mkdir(exist_ok=True)
 
 # ── Config ─────────────────────────────────────────────────────────────────
 _DEFAULT_CFG = {
     "enabled":          RAG_ENABLED,
-    "embed_model":      RAG_EMBED_MODEL,        # Ollama embedding model
-    "chunk_size":       RAG_CHUNK_SIZE,         # chars per chunk
-    "chunk_overlap":    RAG_CHUNK_OVERLAP,      # overlap between chunks
-    "top_k":            RAG_TOP_K,              # chunks returned per query
-    "min_score":        RAG_MIN_SCORE,          # ← from settings, not hardcoded
-    "use_ollama_embed": RAG_USE_OLLAMA_EMBED,   # False = keyword fallback
+    "embed_model":      RAG_EMBED_MODEL,
+    "chunk_size":       RAG_CHUNK_SIZE,
+    "chunk_overlap":    RAG_CHUNK_OVERLAP,
+    "top_k":            RAG_TOP_K,
+    "min_score":        RAG_MIN_SCORE,       # now defaults to 0.0
+    "use_ollama_embed": RAG_USE_OLLAMA_EMBED, # now defaults to false
 }
 
 
@@ -65,6 +63,7 @@ def load_kb_config() -> dict:
 
 
 def save_kb_config(cfg: dict) -> None:
+    KB_CFG_PATH.parent.mkdir(parents=True, exist_ok=True)
     KB_CFG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
 
@@ -72,8 +71,10 @@ def save_kb_config(cfg: dict) -> None:
 # Vector store (in-memory + JSON persistence)
 # ─────────────────────────────────────────────────────────────────────────
 
-# Each entry: { id, source, chunk_index, text, vector: [float], ts, tags }
 _store: list[dict] = []
+
+# Keyword vector dimension — must match _embed_keyword()
+_KW_DIM = 512
 
 
 def _save_store() -> None:
@@ -84,6 +85,31 @@ def _save_store() -> None:
         )
     except Exception as e:
         logger.warning(f"RAG store save failed: {e}")
+
+
+def _migrate_legacy_vectors() -> None:
+    """
+    Detect and re-embed store entries that still carry old broken vectors.
+    Old format: sparse alternating [hash/65536, tf/total, ...] pairs,
+    variable length (never exactly 512). These produce near-zero cosine
+    with any query vector from the new fixed djb2 encoder.
+    Called once at startup after _load_store().
+    """
+    cfg = load_kb_config()
+    needs_fix = [
+        e for e in _store
+        if not e.get("vector") or len(e["vector"]) != _KW_DIM
+    ]
+    if not needs_fix:
+        return
+    logger.info(
+        f"RAG: migrating {len(needs_fix)}/{len(_store)} legacy vector entries "
+        f"to fixed djb2 format"
+    )
+    for entry in needs_fix:
+        entry["vector"] = _embed_keyword(entry["text"])
+    _save_store()
+    logger.info("RAG: legacy vector migration complete")
 
 
 def _load_store() -> None:
@@ -97,6 +123,8 @@ def _load_store() -> None:
 
 
 _load_store()
+# Auto-migrate any legacy vectors on startup so retrieval works immediately
+_migrate_legacy_vectors()
 
 
 def get_all_entries() -> list[dict]:
@@ -121,7 +149,6 @@ def delete_entry(entry_id: str) -> bool:
 
 
 def delete_source(source: str) -> int:
-    """Delete all chunks from a given source file."""
     global _store
     before = len(_store)
     _store  = [e for e in _store if e.get("source") != source]
@@ -138,7 +165,6 @@ def clear_store() -> None:
 
 
 def list_sources() -> list[dict]:
-    """Return unique sources with chunk counts."""
     seen: dict = {}
     for e in _store:
         src = e.get("source", "unknown")
@@ -154,7 +180,6 @@ def list_sources() -> list[dict]:
 # ─────────────────────────────────────────────────────────────────────────
 
 def _chunk_text(text: str, chunk_size: int = 400, overlap: int = 80) -> list[str]:
-    """Split text into overlapping chunks on sentence/paragraph boundaries."""
     text = re.sub(r'\r\n', '\n', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
     text = text.strip()
@@ -189,7 +214,6 @@ def _chunk_text(text: str, chunk_size: int = 400, overlap: int = 80) -> list[str
 # ─────────────────────────────────────────────────────────────────────────
 
 def _embed_ollama(text: str, model: str, timeout: int = 30) -> Optional[list[float]]:
-    """Get embedding vector from Ollama."""
     try:
         import urllib.request
         payload = json.dumps({"model": model, "prompt": text}).encode("utf-8")
@@ -209,24 +233,21 @@ def _embed_ollama(text: str, model: str, timeout: int = 30) -> Optional[list[flo
 
 def _djb2(word: str) -> int:
     """
-    Stable djb2 hash — produces the same bucket for the same word across
-    every Python process run. Replaces Python's built-in hash() which is
-    randomised per process by PYTHONHASHSEED, causing stored and query
-    vectors to map to completely different positions → cosine always ~0.
+    Stable djb2 hash — same word → same bucket every run.
+    Replaces Python's built-in hash() which is randomised per process
+    by PYTHONHASHSEED, causing stored vs query vectors to be unrelated.
     """
     h = 5381
     for ch in word:
         h = ((h << 5) + h) + ord(ch)
-        h &= 0xFFFFFFFF  # keep 32-bit
+        h &= 0xFFFFFFFF
     return h
 
 
 def _embed_keyword(text: str) -> list[float]:
     """
-    Keyword-frequency pseudo-embedding — used when Ollama embedding is
-    unavailable. Uses stable djb2 hashing so vectors are reproducible
-    across sessions (Python hash() is PYTHONHASHSEED-randomised and must
-    NOT be used here).
+    Fixed-size 512-bucket TF keyword embedding using stable djb2 hash.
+    L2-normalised so cosine similarity = dot product.
     """
     tokens = re.findall(r'\b[a-z]{3,}\b', text.lower())
     freq: dict = {}
@@ -234,27 +255,21 @@ def _embed_keyword(text: str) -> list[float]:
         freq[t] = freq.get(t, 0) + 1
     total = sum(freq.values()) or 1
 
-    # Fixed-size dense vector of 512 buckets — each word's TF accumulated
-    # into its stable bucket. Dense format ensures cosine works correctly
-    # even when two vectors have different numbers of unique words.
-    DIM = 512
-    vec = [0.0] * DIM
+    vec = [0.0] * _KW_DIM
     for word, cnt in freq.items():
-        bucket = _djb2(word) % DIM
+        bucket = _djb2(word) % _KW_DIM
         vec[bucket] += cnt / total
 
-    # L2-normalise so cosine = dot product (speeds up retrieval)
     norm = math.sqrt(sum(v * v for v in vec)) or 1.0
     return [v / norm for v in vec]
 
 
 def _is_keyword_vector(vec: list[float]) -> bool:
-    """Heuristic: keyword vectors are exactly DIM=512 long."""
-    return len(vec) == 512
+    return len(vec) == _KW_DIM
 
 
 def _get_embedding(text: str, cfg: dict) -> list[float]:
-    if cfg.get("use_ollama_embed", True):
+    if cfg.get("use_ollama_embed", False):
         vec = _embed_ollama(text, cfg.get("embed_model", "nomic-embed-text"))
         if vec:
             return vec
@@ -267,15 +282,13 @@ def _get_embedding(text: str, cfg: dict) -> list[float]:
 
 def _cosine(a: list[float], b: list[float]) -> float:
     """
-    Cosine similarity between two vectors.
-
-    FIX: original code truncated to min_len, which destroyed sparse keyword
-    vectors when query and stored vectors differed in length. Now zero-pads
-    both to max_len so no information is lost.
+    Cosine similarity. Zero-pads to max_len (was min_len — destroyed
+    vectors when query and stored vectors differed in length).
+    Since _embed_keyword now always returns exactly _KW_DIM floats, both
+    vectors are always the same length — but padding is kept as safety.
     """
     if not a or not b:
         return 0.0
-    # Zero-pad to the LONGER length (was min — caused near-zero scores)
     max_len = max(len(a), len(b))
     if len(a) < max_len:
         a = a + [0.0] * (max_len - len(a))
@@ -294,7 +307,6 @@ def _cosine(a: list[float], b: list[float]) -> float:
 # ─────────────────────────────────────────────────────────────────────────
 
 def _extract_text(path: Path) -> str:
-    """Extract plain text from any supported file type."""
     ext = path.suffix.lower()
 
     if ext in (".txt", ".md", ".log", ".csv", ".yaml", ".yml"):
@@ -337,16 +349,11 @@ def _extract_text(path: Path) -> str:
 
 def ingest_file(path: Path, tags: list[str] = None,
                 progress_cb=None) -> dict:
-    """
-    Ingest a file into the knowledge base.
-    Returns { source, chunks_added, chunks_skipped, message }.
-    """
-    cfg       = load_kb_config()
-    source    = path.name
-    tags      = tags or []
+    cfg    = load_kb_config()
+    source = path.name
+    tags   = tags or []
 
-    removed = delete_source(source)
-
+    removed  = delete_source(source)
     raw_text = _extract_text(path)
     if not raw_text.strip():
         return {"source": source, "chunks_added": 0, "chunks_skipped": 0,
@@ -387,13 +394,10 @@ def ingest_file(path: Path, tags: list[str] = None,
     }
 
 
-def ingest_text(text: str, source_name: str,
-                tags: list[str] = None) -> dict:
-    """Ingest raw text directly (e.g. from a URL or paste)."""
+def ingest_text(text: str, source_name: str, tags: list[str] = None) -> dict:
     tmp = KB_DIR / f"{source_name}.txt"
     tmp.write_text(text, encoding="utf-8")
-    result = ingest_file(tmp, tags=tags)
-    return result
+    return ingest_file(tmp, tags=tags)
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -405,29 +409,19 @@ def retrieve(query: str, top_k: int = None,
     """
     Retrieve the most relevant chunks for a query.
     Returns list of { source, chunk_index, text, score }.
-
-    FIX: original code used RAG_MIN_SCORE (tuned for Ollama dense vectors,
-    typically 0.5+) even in keyword-fallback mode where cosine scores are
-    naturally much lower (0.05–0.30). This caused ALL results to be filtered
-    out. Now detects keyword-mode vectors and uses a keyword-appropriate
-    min_score floor of 0.01.
     """
     if not _store:
         return []
 
     cfg   = load_kb_config()
     top_k = top_k or int(cfg.get("top_k", 4))
-    min_s = float(cfg.get("min_score", RAG_MIN_SCORE))
+    min_s = float(cfg.get("min_score", 0.0))   # default now 0.0
 
     q_vec = _get_embedding(query, cfg)
 
-    # Detect keyword-fallback mode: if query vector is the fixed 512-dim
-    # keyword vector, use a much lower min_score threshold since keyword
-    # cosines are far smaller than dense semantic embedding cosines.
-    keyword_mode = _is_keyword_vector(q_vec)
-    if keyword_mode:
-        min_s = min(min_s, 0.01)  # allow keyword results through
-        logger.debug(f"RAG keyword mode — using min_score={min_s}")
+    # In keyword mode, cap min_score to ensure results pass through
+    if _is_keyword_vector(q_vec):
+        min_s = min(min_s, 0.01)
 
     scored = []
     for entry in _store:
@@ -447,15 +441,13 @@ def retrieve(query: str, top_k: int = None,
 
     logger.debug(
         f"RAG retrieve: query='{query[:60]}' store={len(_store)} "
-        f"scored={len(scored)} passed={len(results)} "
-        f"min_score={min_s} keyword_mode={keyword_mode} "
+        f"passed={len(results)} min_score={min_s} "
         f"top_score={scored[0]['score'] if scored else 'n/a'}"
     )
     return results
 
 
 def format_retrieval_result(results: list[dict]) -> str:
-    """Format retrieval results as a string for the LLM."""
     if not results:
         return "No relevant knowledge base entries found for this query."
     lines = [f"📚 Knowledge Base — {len(results)} relevant chunk(s):\n"]
@@ -469,7 +461,6 @@ def format_retrieval_result(results: list[dict]) -> str:
 
 
 def search(query: str) -> str:
-    """Top-level function called by the KB search tool."""
     cfg = load_kb_config()
     if not cfg.get("enabled", True):
         return "Knowledge base is disabled."
@@ -483,24 +474,23 @@ def search(query: str) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Re-index utility — call after upgrading from old hash-based store
+# Re-index utility
 # ─────────────────────────────────────────────────────────────────────────
 
 def reindex_store() -> dict:
     """
-    Re-embed all existing store entries using the current (fixed) embedding
-    function. Needed when upgrading from the broken hash()-based keyword
-    vectors that were randomised per process.
+    Re-embed ALL store entries with the current embedding function.
+    Call this once after upgrading from the old broken hash()-based
+    keyword vectors. Normally not needed — _migrate_legacy_vectors()
+    handles startup migration automatically.
     """
     if not _store:
         return {"reindexed": 0, "message": "Store is empty."}
-
-    cfg = load_kb_config()
+    cfg   = load_kb_config()
     count = 0
     for entry in _store:
         entry["vector"] = _get_embedding(entry["text"], cfg)
         count += 1
-
     _save_store()
-    logger.info(f"Reindexed {count} store entries with fixed embedding.")
+    logger.info(f"Full reindex complete: {count} entries.")
     return {"reindexed": count, "message": f"Reindexed {count} entries."}
