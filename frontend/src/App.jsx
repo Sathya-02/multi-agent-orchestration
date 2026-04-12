@@ -19,6 +19,33 @@ import './styles/App.css'
 
 const WS_URL = 'ws://localhost:8000/ws'
 
+// ── Phase Bar ─────────────────────────────────────────────────────────────────
+function PhaseBar({ currentPhase, running }) {
+  const phases = PHASE_ORDER || [
+    { id: 'coordinator', icon: '🎯', name: 'Coordinator' },
+    { id: 'researcher',  icon: '🔍', name: 'Researcher'  },
+    { id: 'analyst',     icon: '📊', name: 'Analyst'     },
+    { id: 'writer',      icon: '✍️',  name: 'Writer'      },
+  ]
+  if (!running && !currentPhase) return null
+  return (
+    <div className="phase-bar">
+      {phases.map((p, i) => {
+        const idx   = phases.findIndex(x => x.id === currentPhase)
+        const isActive = p.id === currentPhase
+        const isDone   = idx > -1 && i < idx
+        return (
+          <span key={p.id} className={`phase-step${isActive ? ' active' : ''}${isDone ? ' done' : ''}`}>
+            <span className="phase-icon">{p.icon}</span>
+            <span className="phase-name">{p.name}</span>
+            {i < phases.length - 1 && <span className="phase-arrow">›</span>}
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function App() {
   // ── Core state ─────────────────────────────────────────
   const [connected,     setConnected]     = useState(false)
@@ -118,7 +145,6 @@ export default function App() {
 
   // ── Knowledge Base / RAG state ───────────────────────────
   const [kbEntries,      setKbEntries]      = useState({ entries:[], sources:[], count:0 })
-  // FIX: use_ollama_embed default changed to false (safer default — no embed server assumed)
   const [kbConfig,       setKbConfig]       = useState({ enabled:true, embed_model:'nomic-embed-text', chunk_size:400, chunk_overlap:80, top_k:4, min_score:0.25, use_ollama_embed:false })
   const [kbConfigSaving, setKbConfigSaving] = useState(false)
   const [kbUploading,    setKbUploading]    = useState(false)
@@ -152,7 +178,6 @@ export default function App() {
     fetchSiConfig(); fetchWsConfig(); fetchKbEntries(); fetchKbConfig()
   }, [])
 
-  // Models polling when panel open
   useEffect(() => {
     if (!showModelPanel) return
     fetchModels()
@@ -708,7 +733,6 @@ export default function App() {
   const handleSaveKbConfig = async () => {
     setKbConfigSaving(true)
     try {
-      // FIX: was POST — backend route is PUT /kb/config
       await fetch(`${API_URL}/kb/config`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(kbConfig),
@@ -770,7 +794,6 @@ export default function App() {
     setKbSearching(true); setKbSearchResult(null)
     try {
       const d = await fetch(`${API_URL}/kb/search?q=${encodeURIComponent(kbSearchQ)}`).then(r => r.json())
-      // FIX: backend returns { results: [...] } — was incorrectly reading d.result
       setKbSearchResult(d.results ?? d.result ?? d.error ?? [])
     } catch (e) { setKbSearchResult([]) } finally { setKbSearching(false) }
   }
@@ -849,6 +872,9 @@ export default function App() {
           handleDownload={handleDownload}
         />
       </div>
+
+      {/* Phase progress bar — sticky bottom footer, visible during/after run */}
+      <PhaseBar currentPhase={currentPhase} running={running} />
 
       {/* 3-D Board Room — right-side split pane */}
       {show3DRoom && (
