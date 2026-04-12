@@ -6,7 +6,7 @@ API keys or cloud services.
 
 Architecture:
   • Documents ingested → chunked → embedded via Ollama nomic-embed-text
-  • Vectors stored in-memory + persisted to rag_store.json on disk
+  • Vectors stored in-memory + persisted to data/rag_store.json on disk
   • Cosine similarity retrieval — top-k chunks returned to agents
   • Falls back to keyword (djb2 TF) if Ollama embedding is unavailable
 
@@ -25,30 +25,36 @@ from settings import (
     RAG_ENABLED, RAG_EMBED_MODEL, RAG_CHUNK_SIZE,
     RAG_CHUNK_OVERLAP, RAG_TOP_K, RAG_MIN_SCORE, RAG_USE_OLLAMA_EMBED,
     RAG_CONFIG_FILE,
+    RAG_STORE_FILE,   # FIX: was missing — KB_STORE was hardcoded to wrong path
 )
 
 logger = logging.getLogger("rag_engine")
 
-# ── Paths ──────────────────────────────────────────────────────────────────
+# ── Paths ────────────────────────────────────────────────────────────────────────────
 BASE_DIR    = Path(__file__).parent
-KB_STORE    = BASE_DIR / "rag_store.json"
+# FIX: KB_STORE now uses RAG_STORE_FILE from settings (data/rag_store.json)
+# Old hardcoded value was BASE_DIR/"rag_store.json" which is a different path.
+# When data/ dir didn’t exist, _save_store() silently failed and
+# the import-time _load_store() could raise, causing the whole module
+# import to fail — main.py then set RAG_ENABLED=False → all /kb/* = 404.
+KB_STORE    = RAG_STORE_FILE
 KB_DIR      = BASE_DIR / "knowledge_base"
-# FIX: was BASE_DIR/"rag_config.json" — mismatched settings.py's
-# RAG_CONFIG_FILE = BASE_DIR/"data"/"rag_config.json".
-# UI config saves (min_score, top_k etc.) were written to data/rag_config.json
-# but load_kb_config() read from rag_config.json — discarded on every restart.
 KB_CFG_PATH = RAG_CONFIG_FILE
+
+# Ensure both data/ and knowledge_base/ directories exist before any I/O
+KB_STORE.parent.mkdir(parents=True, exist_ok=True)
+KB_CFG_PATH.parent.mkdir(parents=True, exist_ok=True)
 KB_DIR.mkdir(exist_ok=True)
 
-# ── Config ─────────────────────────────────────────────────────────────────
+# ── Config ─────────────────────────────────────────────────────────────────────────────
 _DEFAULT_CFG = {
     "enabled":          RAG_ENABLED,
     "embed_model":      RAG_EMBED_MODEL,
     "chunk_size":       RAG_CHUNK_SIZE,
     "chunk_overlap":    RAG_CHUNK_OVERLAP,
     "top_k":            RAG_TOP_K,
-    "min_score":        RAG_MIN_SCORE,       # now defaults to 0.0
-    "use_ollama_embed": RAG_USE_OLLAMA_EMBED, # now defaults to false
+    "min_score":        RAG_MIN_SCORE,
+    "use_ollama_embed": RAG_USE_OLLAMA_EMBED,
 }
 
 
@@ -67,9 +73,9 @@ def save_kb_config(cfg: dict) -> None:
     KB_CFG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────
 # Vector store (in-memory + JSON persistence)
-# ─────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────
 
 _store: list[dict] = []
 
@@ -79,6 +85,7 @@ _KW_DIM = 512
 
 def _save_store() -> None:
     try:
+        KB_STORE.parent.mkdir(parents=True, exist_ok=True)
         KB_STORE.write_text(
             json.dumps(_store, indent=2, ensure_ascii=False),
             encoding="utf-8",
@@ -122,9 +129,15 @@ def _load_store() -> None:
             _store = []
 
 
-_load_store()
-# Auto-migrate any legacy vectors on startup so retrieval works immediately
-_migrate_legacy_vectors()
+# FIX: wrap module-level startup calls in try/except so a corrupt store
+# or missing directory never causes an ImportError in main.py which would
+# set RAG_ENABLED=False and make every /kb/* endpoint return 404.
+try:
+    _load_store()
+    _migrate_legacy_vectors()
+except Exception as _startup_err:
+    logger.warning(f"RAG store startup error (continuing with empty store): {_startup_err}")
+    _store = []
 
 
 def get_all_entries() -> list[dict]:
@@ -175,9 +188,9 @@ def list_sources() -> list[dict]:
     return sorted(seen.values(), key=lambda x: x["ts"], reverse=True)
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────
 # Text chunking
-# ─────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────
 
 def _chunk_text(text: str, chunk_size: int = 400, overlap: int = 80) -> list[str]:
     text = re.sub(r'\r\n', '\n', text)
@@ -187,7 +200,7 @@ def _chunk_text(text: str, chunk_size: int = 400, overlap: int = 80) -> list[str
     if len(text) <= chunk_size:
         return [text] if text else []
 
-    boundaries = [m.end() for m in re.finditer(r'(?:\n\n|\.\s+|\?\s+|!\s+)', text)]
+    boundaries = [m.end() for m in re.finditer(r'(?:\n\n|\. |\? |! )', text)]
 
     chunks = []
     start  = 0
@@ -209,9 +222,9 @@ def _chunk_text(text: str, chunk_size: int = 400, overlap: int = 80) -> list[str
     return [c for c in chunks if len(c) > 20]
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────
 # Embedding
-# ─────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────
 
 def _embed_ollama(text: str, model: str, timeout: int = 30) -> Optional[list[float]]:
     try:
@@ -276,17 +289,11 @@ def _get_embedding(text: str, cfg: dict) -> list[float]:
     return _embed_keyword(text)
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────
 # Cosine similarity
-# ─────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────
 
 def _cosine(a: list[float], b: list[float]) -> float:
-    """
-    Cosine similarity. Zero-pads to max_len (was min_len — destroyed
-    vectors when query and stored vectors differed in length).
-    Since _embed_keyword now always returns exactly _KW_DIM floats, both
-    vectors are always the same length — but padding is kept as safety.
-    """
     if not a or not b:
         return 0.0
     max_len = max(len(a), len(b))
@@ -302,9 +309,9 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb)
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────
 # Ingestion
-# ─────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────
 
 def _extract_text(path: Path) -> str:
     ext = path.suffix.lower()
@@ -321,17 +328,26 @@ def _extract_text(path: Path) -> str:
             return raw
 
     if ext == ".html":
-        raw  = path.read_text(encoding="utf-8", errors="replace")
-        text = re.sub(r'<[^>]+>', ' ', raw)
-        return re.sub(r'\s+', ' ', text).strip()
+        raw = path.read_text(encoding="utf-8", errors="replace")
+        return re.sub(r'<[^>]+>', ' ', raw)
 
     if ext == ".pdf":
         try:
+            import pdfplumber
+            with pdfplumber.open(path) as pdf:
+                return "\n".join(
+                    page.extract_text() or "" for page in pdf.pages
+                )
+        except ImportError:
+            pass
+        try:
             import pypdf
             reader = pypdf.PdfReader(str(path))
-            return "\n".join(p.extract_text() or "" for p in reader.pages)
+            return "\n".join(
+                page.extract_text() or "" for page in reader.pages
+            )
         except ImportError:
-            return f"[PDF: {path.name} — install pypdf to extract text]"
+            return f"[PDF: {path.name} — install pdfplumber or pypdf to extract text]"
 
     if ext == ".docx":
         try:
@@ -397,100 +413,69 @@ def ingest_file(path: Path, tags: list[str] = None,
 def ingest_text(text: str, source_name: str, tags: list[str] = None) -> dict:
     tmp = KB_DIR / f"{source_name}.txt"
     tmp.write_text(text, encoding="utf-8")
-    return ingest_file(tmp, tags=tags)
+    result = ingest_file(tmp, tags=tags)
+    # Keep the .txt file so it can be browsed; only remove on clear/delete
+    return result
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────
 # Retrieval
-# ─────────────────────────────────────────────────────────────────────────
+# ───────────────────────────────────────────────────────────────────────────
 
 def retrieve(query: str, top_k: int = None,
              filter_tags: list[str] = None) -> list[dict]:
     """
     Retrieve the most relevant chunks for a query.
-    Returns list of { source, chunk_index, text, score }.
     """
-    if not _store:
-        return []
-
     cfg   = load_kb_config()
     top_k = top_k or int(cfg.get("top_k", 4))
-    min_s = float(cfg.get("min_score", 0.0))   # default now 0.0
+    min_score = float(cfg.get("min_score", 0.0))
 
     q_vec = _get_embedding(query, cfg)
 
-    # In keyword mode, cap min_score to ensure results pass through
-    if _is_keyword_vector(q_vec):
-        min_s = min(min_s, 0.01)
-
     scored = []
     for entry in _store:
+        vec   = entry.get("vector", [])
+        score = _cosine(q_vec, vec)
+        if score >= min_score:
+            scored.append((score, entry))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    results = []
+    for score, entry in scored[:top_k]:
         if filter_tags and not any(t in entry.get("tags", []) for t in filter_tags):
             continue
-        score = _cosine(q_vec, entry.get("vector", []))
-        scored.append({
-            "source":      entry["source"],
-            "chunk_index": entry["chunk_index"],
-            "text":        entry["text"],
-            "score":       round(score, 4),
-            "tags":        entry.get("tags", []),
+        results.append({
+            "id":     entry.get("id"),
+            "source": entry.get("source"),
+            "text":   entry.get("text"),
+            "score":  round(score, 4),
+            "tags":   entry.get("tags", []),
         })
-
-    scored.sort(key=lambda x: x["score"], reverse=True)
-    results = [r for r in scored[:top_k] if r["score"] >= min_s]
-
-    logger.debug(
-        f"RAG retrieve: query='{query[:60]}' store={len(_store)} "
-        f"passed={len(results)} min_score={min_s} "
-        f"top_score={scored[0]['score'] if scored else 'n/a'}"
-    )
     return results
 
 
-def format_retrieval_result(results: list[dict]) -> str:
-    if not results:
-        return "No relevant knowledge base entries found for this query."
-    lines = [f"📚 Knowledge Base — {len(results)} relevant chunk(s):\n"]
-    for i, r in enumerate(results, 1):
-        lines.append(
-            f"[{i}] Source: {r['source']} (chunk {r['chunk_index']}, "
-            f"relevance: {r['score']:.0%})\n"
-            f"{r['text']}\n"
-        )
-    return "\n".join(lines)
-
-
 def search(query: str) -> str:
-    cfg = load_kb_config()
-    if not cfg.get("enabled", True):
-        return "Knowledge base is disabled."
-    if not _store:
-        return (
-            "Knowledge base is empty. "
-            "Add documents via ⚙️ Settings → 📚 Knowledge Base."
-        )
+    """String wrapper used by agent tools."""
     results = retrieve(query)
-    return format_retrieval_result(results)
+    if not results:
+        return "No relevant knowledge base entries found."
+    parts = []
+    for i, r in enumerate(results, 1):
+        parts.append(
+            f"[{i}] Source: {r['source']} (score: {r['score']})\n{r['text']}"
+        )
+    return "\n\n".join(parts)
 
-
-# ─────────────────────────────────────────────────────────────────────────
-# Re-index utility
-# ─────────────────────────────────────────────────────────────────────────
 
 def reindex_store() -> dict:
-    """
-    Re-embed ALL store entries with the current embedding function.
-    Call this once after upgrading from the old broken hash()-based
-    keyword vectors. Normally not needed — _migrate_legacy_vectors()
-    handles startup migration automatically.
-    """
-    if not _store:
-        return {"reindexed": 0, "message": "Store is empty."}
-    cfg   = load_kb_config()
+    """Re-embed all entries using the current embedding config."""
+    cfg = load_kb_config()
     count = 0
     for entry in _store:
         entry["vector"] = _get_embedding(entry["text"], cfg)
         count += 1
-    _save_store()
-    logger.info(f"Full reindex complete: {count} entries.")
-    return {"reindexed": count, "message": f"Reindexed {count} entries."}
+    if count:
+        _save_store()
+    return {"reindexed": count, "message": f"Re-embedded {count} chunks."}
