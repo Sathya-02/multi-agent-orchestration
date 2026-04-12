@@ -19,7 +19,7 @@ import './styles/App.css'
 
 const WS_URL = 'ws://localhost:8000/ws'
 
-// ── Phase Bar ─────────────────────────────────────────────────────────────────
+// ── Phase Bar — sticky bottom footer, shown only during/after a run ──────────
 function PhaseBar({ currentPhase, running }) {
   const phases = PHASE_ORDER || [
     { id: 'coordinator', icon: '🎯', name: 'Coordinator' },
@@ -31,7 +31,7 @@ function PhaseBar({ currentPhase, running }) {
   return (
     <div className="phase-bar">
       {phases.map((p, i) => {
-        const idx   = phases.findIndex(x => x.id === currentPhase)
+        const idx      = phases.findIndex(x => x.id === currentPhase)
         const isActive = p.id === currentPhase
         const isDone   = idx > -1 && i < idx
         return (
@@ -873,9 +873,6 @@ export default function App() {
         />
       </div>
 
-      {/* Phase progress bar — sticky bottom footer, visible during/after run */}
-      <PhaseBar currentPhase={currentPhase} running={running} />
-
       {/* 3-D Board Room — right-side split pane */}
       {show3DRoom && (
         <div className="canvas-area">
@@ -892,6 +889,9 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Phase progress bar — sticky bottom footer, last child so it anchors to viewport bottom */}
+      <PhaseBar currentPhase={currentPhase} running={running} />
     </div>
   )
 }

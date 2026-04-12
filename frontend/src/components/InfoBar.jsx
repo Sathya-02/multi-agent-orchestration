@@ -3,15 +3,13 @@ import { PHASE_ORDER, PHASE_META } from '../utils/constants'
 
 /**
  * InfoBar
- * Slim status strip below the header: connection pill, model, phase
- * progress stepper, and the Board Room (3-D view) toggle.
+ * Slim status strip below the header: connection pill, model, RAM/CPU, job id.
+ * Phase stepper has been moved to the sticky PhaseBar at the bottom of app-container.
  */
 export default function InfoBar({
   connected, currentModel, currentPhase, running,
   stats, jobId, show3DRoom, setShow3DRoom, modelBadgeColor,
 }) {
-  const currentPhaseIndex = currentPhase ? PHASE_ORDER.indexOf(currentPhase) : -1
-
   return (
     <div className="info-bar">
       {/* ── Left cluster ─────────────────────────────────── */}
@@ -46,24 +44,6 @@ export default function InfoBar({
           </span>
         )}
       </div>
-
-      {/* ── Phase stepper ─────────────────────────────────── */}
-      {(running || currentPhase) && (
-        <div className="phase-bar">
-          {PHASE_ORDER.map((phase, i) => {
-            const meta   = PHASE_META[phase]
-            const done   = i < currentPhaseIndex
-            const active = i === currentPhaseIndex
-            return (
-              <div key={phase} className={`phase-step${active ? ' active' : ''}${done ? ' done' : ''}`}>
-                <span className="phase-icon">{meta.icon}</span>
-                <span className="phase-name">{meta.name}</span>
-                {i < PHASE_ORDER.length - 1 && <span className="phase-arrow">›</span>}
-              </div>
-            )
-          })}
-        </div>
-      )}
 
       {/* ── Right cluster ─────────────────────────────────── */}
       <div className="info-bar-right">
