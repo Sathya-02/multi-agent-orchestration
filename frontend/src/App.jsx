@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { API_URL, PHASE_ORDER } from './utils/constants'
+import { API_URL, PHASE_ORDER, PHASE_META } from './utils/constants'
 import { useStats }             from './hooks/useStats'
 
 import AgentScene3D         from './components/AgentScene3D'
@@ -21,19 +21,22 @@ const WS_URL = 'ws://localhost:8000/ws'
 
 // ── Phase Bar — sticky bottom footer, shown only during/after a run ──────────
 function PhaseBar({ currentPhase, running }) {
-  const phases = PHASE_ORDER || [
-    { id: 'coordinator', icon: '🎯', name: 'Coordinator' },
-    { id: 'researcher',  icon: '🔍', name: 'Researcher'  },
-    { id: 'analyst',     icon: '📊', name: 'Analyst'     },
-    { id: 'writer',      icon: '✍️',  name: 'Writer'      },
-  ]
+  // PHASE_ORDER is string[], enrich each entry with icon/name from PHASE_META
+  const phases = PHASE_ORDER.map(id => ({
+    id,
+    icon: PHASE_META[id]?.icon ?? '⚙️',
+    name: PHASE_META[id]?.name ?? id,
+  }))
+
   if (!running && !currentPhase) return null
+
+  const activeIdx = phases.findIndex(p => p.id === currentPhase)
+
   return (
     <div className="phase-bar">
       {phases.map((p, i) => {
-        const idx      = phases.findIndex(x => x.id === currentPhase)
         const isActive = p.id === currentPhase
-        const isDone   = idx > -1 && i < idx
+        const isDone   = activeIdx > -1 && i < activeIdx
         return (
           <span key={p.id} className={`phase-step${isActive ? ' active' : ''}${isDone ? ' done' : ''}`}>
             <span className="phase-icon">{p.icon}</span>
