@@ -155,7 +155,6 @@ def list_sources() -> list[dict]:
 
 def _chunk_text(text: str, chunk_size: int = 400, overlap: int = 80) -> list[str]:
     """Split text into overlapping chunks on sentence/paragraph boundaries."""
-    # Normalise whitespace
     text = re.sub(r'\r\n', '\n', text)
     text = re.sub(r'\n{3,}', '\n\n', text)
     text = text.strip()
@@ -163,7 +162,6 @@ def _chunk_text(text: str, chunk_size: int = 400, overlap: int = 80) -> list[str
     if len(text) <= chunk_size:
         return [text] if text else []
 
-    # Try to split on paragraph/sentence boundaries
     boundaries = [m.end() for m in re.finditer(r'(?:\n\n|\.\s+|\?\s+|!\s+)', text)]
 
     chunks = []
@@ -173,7 +171,6 @@ def _chunk_text(text: str, chunk_size: int = 400, overlap: int = 80) -> list[str
         if end >= len(text):
             chunks.append(text[start:].strip())
             break
-        # Find the last boundary before 'end'
         good_end = end
         for b in reversed(boundaries):
             if start < b <= end:
@@ -210,23 +207,50 @@ def _embed_ollama(text: str, model: str, timeout: int = 30) -> Optional[list[flo
         return None
 
 
+def _djb2(word: str) -> int:
+    """
+    Stable djb2 hash — produces the same bucket for the same word across
+    every Python process run. Replaces Python's built-in hash() which is
+    randomised per process by PYTHONHASHSEED, causing stored and query
+    vectors to map to completely different positions → cosine always ~0.
+    """
+    h = 5381
+    for ch in word:
+        h = ((h << 5) + h) + ord(ch)
+        h &= 0xFFFFFFFF  # keep 32-bit
+    return h
+
+
 def _embed_keyword(text: str) -> list[float]:
     """
     Keyword-frequency pseudo-embedding — used when Ollama embedding is
-    unavailable. Not semantic but still enables useful TF retrieval.
+    unavailable. Uses stable djb2 hashing so vectors are reproducible
+    across sessions (Python hash() is PYTHONHASHSEED-randomised and must
+    NOT be used here).
     """
     tokens = re.findall(r'\b[a-z]{3,}\b', text.lower())
     freq: dict = {}
     for t in tokens:
         freq[t] = freq.get(t, 0) + 1
     total = sum(freq.values()) or 1
-    # Return as a sorted-key sparse vector encoded as alternating [hash, tf] pairs
-    pairs = []
-    for word, cnt in sorted(freq.items()):
-        h = abs(hash(word)) % 65536
-        pairs.append(h / 65536)
-        pairs.append(cnt / total)
-    return pairs[:512]   # cap size
+
+    # Fixed-size dense vector of 512 buckets — each word's TF accumulated
+    # into its stable bucket. Dense format ensures cosine works correctly
+    # even when two vectors have different numbers of unique words.
+    DIM = 512
+    vec = [0.0] * DIM
+    for word, cnt in freq.items():
+        bucket = _djb2(word) % DIM
+        vec[bucket] += cnt / total
+
+    # L2-normalise so cosine = dot product (speeds up retrieval)
+    norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+    return [v / norm for v in vec]
+
+
+def _is_keyword_vector(vec: list[float]) -> bool:
+    """Heuristic: keyword vectors are exactly DIM=512 long."""
+    return len(vec) == 512
 
 
 def _get_embedding(text: str, cfg: dict) -> list[float]:
@@ -242,14 +266,24 @@ def _get_embedding(text: str, cfg: dict) -> list[float]:
 # ─────────────────────────────────────────────────────────────────────────
 
 def _cosine(a: list[float], b: list[float]) -> float:
+    """
+    Cosine similarity between two vectors.
+
+    FIX: original code truncated to min_len, which destroyed sparse keyword
+    vectors when query and stored vectors differed in length. Now zero-pads
+    both to max_len so no information is lost.
+    """
     if not a or not b:
         return 0.0
-    # Align lengths
-    min_len = min(len(a), len(b))
-    a, b    = a[:min_len], b[:min_len]
-    dot  = sum(x * y for x, y in zip(a, b))
-    na   = math.sqrt(sum(x * x for x in a))
-    nb   = math.sqrt(sum(y * y for y in b))
+    # Zero-pad to the LONGER length (was min — caused near-zero scores)
+    max_len = max(len(a), len(b))
+    if len(a) < max_len:
+        a = a + [0.0] * (max_len - len(a))
+    if len(b) < max_len:
+        b = b + [0.0] * (max_len - len(b))
+    dot = sum(x * y for x, y in zip(a, b))
+    na  = math.sqrt(sum(x * x for x in a))
+    nb  = math.sqrt(sum(y * y for y in b))
     if na == 0 or nb == 0:
         return 0.0
     return dot / (na * nb)
@@ -295,7 +329,6 @@ def _extract_text(path: Path) -> str:
         except ImportError:
             return f"[DOCX: {path.name} — install python-docx to extract text]"
 
-    # Generic text fallback
     try:
         return path.read_text(encoding="utf-8", errors="replace")
     except Exception:
@@ -312,10 +345,8 @@ def ingest_file(path: Path, tags: list[str] = None,
     source    = path.name
     tags      = tags or []
 
-    # Remove old chunks for same source (re-ingest)
     removed = delete_source(source)
 
-    # Extract + chunk
     raw_text = _extract_text(path)
     if not raw_text.strip():
         return {"source": source, "chunks_added": 0, "chunks_skipped": 0,
@@ -359,7 +390,6 @@ def ingest_file(path: Path, tags: list[str] = None,
 def ingest_text(text: str, source_name: str,
                 tags: list[str] = None) -> dict:
     """Ingest raw text directly (e.g. from a URL or paste)."""
-    # Write to a temp file in KB dir then ingest
     tmp = KB_DIR / f"{source_name}.txt"
     tmp.write_text(text, encoding="utf-8")
     result = ingest_file(tmp, tags=tags)
@@ -375,6 +405,12 @@ def retrieve(query: str, top_k: int = None,
     """
     Retrieve the most relevant chunks for a query.
     Returns list of { source, chunk_index, text, score }.
+
+    FIX: original code used RAG_MIN_SCORE (tuned for Ollama dense vectors,
+    typically 0.5+) even in keyword-fallback mode where cosine scores are
+    naturally much lower (0.05–0.30). This caused ALL results to be filtered
+    out. Now detects keyword-mode vectors and uses a keyword-appropriate
+    min_score floor of 0.01.
     """
     if not _store:
         return []
@@ -384,6 +420,14 @@ def retrieve(query: str, top_k: int = None,
     min_s = float(cfg.get("min_score", RAG_MIN_SCORE))
 
     q_vec = _get_embedding(query, cfg)
+
+    # Detect keyword-fallback mode: if query vector is the fixed 512-dim
+    # keyword vector, use a much lower min_score threshold since keyword
+    # cosines are far smaller than dense semantic embedding cosines.
+    keyword_mode = _is_keyword_vector(q_vec)
+    if keyword_mode:
+        min_s = min(min_s, 0.01)  # allow keyword results through
+        logger.debug(f"RAG keyword mode — using min_score={min_s}")
 
     scored = []
     for entry in _store:
@@ -399,7 +443,15 @@ def retrieve(query: str, top_k: int = None,
         })
 
     scored.sort(key=lambda x: x["score"], reverse=True)
-    return [r for r in scored[:top_k] if r["score"] >= min_s]
+    results = [r for r in scored[:top_k] if r["score"] >= min_s]
+
+    logger.debug(
+        f"RAG retrieve: query='{query[:60]}' store={len(_store)} "
+        f"scored={len(scored)} passed={len(results)} "
+        f"min_score={min_s} keyword_mode={keyword_mode} "
+        f"top_score={scored[0]['score'] if scored else 'n/a'}"
+    )
+    return results
 
 
 def format_retrieval_result(results: list[dict]) -> str:
@@ -422,7 +474,33 @@ def search(query: str) -> str:
     if not cfg.get("enabled", True):
         return "Knowledge base is disabled."
     if not _store:
-        return ("Knowledge base is empty. "
-                "Add documents via ⚙️ Settings → 📚 Knowledge Base.")
+        return (
+            "Knowledge base is empty. "
+            "Add documents via ⚙️ Settings → 📚 Knowledge Base."
+        )
     results = retrieve(query)
     return format_retrieval_result(results)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Re-index utility — call after upgrading from old hash-based store
+# ─────────────────────────────────────────────────────────────────────────
+
+def reindex_store() -> dict:
+    """
+    Re-embed all existing store entries using the current (fixed) embedding
+    function. Needed when upgrading from the broken hash()-based keyword
+    vectors that were randomised per process.
+    """
+    if not _store:
+        return {"reindexed": 0, "message": "Store is empty."}
+
+    cfg = load_kb_config()
+    count = 0
+    for entry in _store:
+        entry["vector"] = _get_embedding(entry["text"], cfg)
+        count += 1
+
+    _save_store()
+    logger.info(f"Reindexed {count} store entries with fixed embedding.")
+    return {"reindexed": count, "message": f"Reindexed {count} entries."}
