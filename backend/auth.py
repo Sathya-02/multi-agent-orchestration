@@ -1,272 +1,186 @@
 """
-auth.py — Local Login & RBAC Engine
-=====================================
-Provides JWT-based authentication and role-based access control
-for the local Multi-Agent Orchestration workspace.
+auth.py — Local workspace authentication + RBAC engine.
 
-Roles (least → most privileged):
-  viewer   — read-only: view agents, tasks, logs
-  operator — viewer + run tasks, upload docs, use RAG
-  admin    — full access: manage users, agents, settings, self-improver
+Users are stored in users.json (next to this file).
+Tokens are JWTs signed with AUTH_SECRET_KEY from .env.local.
 
-Usage (in any FastAPI route):
-    from auth import require_role, UserToken
+Role hierarchy: viewer < operator < admin
 
-    @router.get("/admin-only")
-    async def admin_route(user: UserToken = Depends(require_role("admin"))):
-        ...
+New in this version:
+  - extra_permissions list stored per-user (admin-assignable)
+  - update_user / delete_user / list_users / create_user helpers
+  - hash_password / verify_password exposed for router
 """
-
-import json
-import os
-import hashlib
-import secrets
-from datetime import datetime, timedelta, timezone
+import os, json, time, hashlib, secrets
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
+from dataclasses import dataclass
+
+try:
+    import jwt
+except ImportError:
+    jwt = None  # graceful degradation — token will be a plain JSON string
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from pydantic import BaseModel
 
-try:
-    import jwt as pyjwt
-except ImportError:
-    pyjwt = None
-
-# ─── Configuration ────────────────────────────────────────────────────────────
-
-BASE_DIR = Path(__file__).parent
-USERS_FILE = BASE_DIR / "users.json"
-
-SECRET_KEY = os.environ.get("AUTH_SECRET_KEY", "local-dev-secret-change-in-production")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "480"))  # 8h
-
-# Role hierarchy — higher index = more privilege
-ROLE_HIERARCHY = ["viewer", "operator", "admin"]
+# ── Config ────────────────────────────────────────────────────────────────────
+SECRET_KEY   = os.getenv("AUTH_SECRET_KEY", "dev-secret-change-me")
+ALGORITHM   = "HS256"
+TOKEN_EXPIRE = int(os.getenv("AUTH_TOKEN_EXPIRE_HOURS", "24")) * 3600
+USERS_FILE   = Path(__file__).parent / "users.json"
+ROLE_RANK    = {"viewer": 0, "operator": 1, "admin": 2}
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login", auto_error=False)
 
-# ─── Pydantic Models ──────────────────────────────────────────────────────────
 
-class UserToken(BaseModel):
-    """Decoded token payload injected into route handlers."""
-    username: str
-    role: str
-    display_name: Optional[str] = None
-
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-class LoginResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    username: str
-    role: str
-    display_name: Optional[str] = None
-
-class UserRecord(BaseModel):
-    username: str
-    display_name: Optional[str] = None
-    role: str
-    active: bool = True
-
-class CreateUserRequest(BaseModel):
-    username: str
-    password: str
-    role: str = "viewer"
-    display_name: Optional[str] = None
-
-class UpdateUserRequest(BaseModel):
-    role: Optional[str] = None
-    display_name: Optional[str] = None
-    active: Optional[bool] = None
-    password: Optional[str] = None
-
-# ─── Utilities ────────────────────────────────────────────────────────────────
-
-def _hash_password(password: str, salt: Optional[str] = None) -> tuple[str, str]:
-    """Returns (hashed_password, salt). Uses SHA-256 + salt."""
-    if salt is None:
-        salt = secrets.token_hex(16)
-    hashed = hashlib.sha256(f"{salt}{password}".encode()).hexdigest()
-    return hashed, salt
-
-def _verify_password(password: str, stored_hash: str, salt: str) -> bool:
-    computed, _ = _hash_password(password, salt)
-    return computed == stored_hash
-
-def _load_users() -> dict:
+# ── User store ────────────────────────────────────────────────────────────────
+def _load() -> dict:
     if not USERS_FILE.exists():
         return {}
-    with open(USERS_FILE, "r") as f:
+    with open(USERS_FILE) as f:
         return json.load(f)
 
-def _save_users(users: dict) -> None:
+def _save(data: dict):
     with open(USERS_FILE, "w") as f:
-        json.dump(users, f, indent=2)
+        json.dump(data, f, indent=2)
 
-def _role_level(role: str) -> int:
+def list_users() -> List[dict]:
+    return list(_load().values())
+
+def get_user(username: str) -> Optional[dict]:
+    return _load().get(username)
+
+def create_user(username: str, password: str, display_name: str = "",
+                role: str = "viewer", extra_permissions: List[str] = None) -> dict:
+    data = _load()
+    user = {
+        "username":          username,
+        "display_name":      display_name or username,
+        "role":              role,
+        "active":            True,
+        "extra_permissions": extra_permissions or [],
+        "password_hash":     hash_password(password),
+    }
+    data[username] = user
+    _save(data)
+    return user
+
+def update_user(username: str, **kwargs) -> dict:
+    data = _load()
+    if username not in data:
+        raise KeyError(f"User '{username}' not found")
+    data[username].update(kwargs)
+    _save(data)
+    return data[username]
+
+def delete_user(username: str):
+    data = _load()
+    if username in data:
+        del data[username]
+        _save(data)
+
+
+# ── Password hashing ──────────────────────────────────────────────────────────
+def hash_password(password: str, salt: str = None) -> str:
+    salt = salt or secrets.token_hex(16)
+    h = hashlib.sha256(f"{salt}{password}".encode()).hexdigest()
+    return f"{salt}:{h}"
+
+def verify_password(password: str, stored: str) -> bool:
     try:
-        return ROLE_HIERARCHY.index(role)
-    except ValueError:
-        return -1
+        salt, _ = stored.split(":", 1)
+        return hash_password(password, salt) == stored
+    except Exception:
+        return False
 
-# ─── Token Operations ─────────────────────────────────────────────────────────
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    if pyjwt is None:
-        raise RuntimeError("PyJWT not installed. Run: pip install PyJWT")
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode["exp"] = expire
-    return pyjwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+# ── JWT ───────────────────────────────────────────────────────────────────────
+def create_token(payload: dict) -> str:
+    data = {**payload, "exp": int(time.time()) + TOKEN_EXPIRE, "iat": int(time.time())}
+    if jwt:
+        return jwt.encode(data, SECRET_KEY, algorithm=ALGORITHM)
+    import base64
+    return base64.b64encode(json.dumps(data).encode()).decode()
 
-def decode_access_token(token: str) -> Optional[dict]:
-    if pyjwt is None:
-        return None
+def decode_token(token: str) -> Optional[dict]:
+    if jwt:
+        try:
+            return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        except Exception:
+            return None
     try:
-        return pyjwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        import base64
+        return json.loads(base64.b64decode(token.encode()).decode())
     except Exception:
         return None
 
-# ─── Core Auth Functions ──────────────────────────────────────────────────────
+
+# ── FastAPI dependencies ───────────────────────────────────────────────────────
+@dataclass
+class UserToken:
+    username: str
+    role:     str
+    extra_permissions: List[str] = None
+
+    def can(self, perm: str) -> bool:
+        PERMISSIONS = {
+            "view_dashboard":"viewer","view_files":"viewer","view_filesystem":"viewer",
+            "view_kb":"viewer","view_tools":"viewer","view_agents":"viewer",
+            "view_settings":"viewer","view_models":"viewer","kb_search":"viewer",
+            "kb_rag_query":"viewer","upload_files":"operator","delete_files":"operator",
+            "ingest_kb":"operator","delete_kb_source":"operator","clear_kb":"operator",
+            "save_kb_config":"operator","run_task":"operator","chat_send":"operator",
+            "web_search":"operator","filesystem_write":"operator","approve_spawn":"operator",
+            "add_tool":"operator","edit_tool":"operator","delete_tool":"operator",
+            "edit_agent":"operator","edit_skills_md":"operator","manage_users":"admin",
+            "create_agent":"admin","delete_agent":"admin","edit_settings":"admin",
+            "change_model":"admin","self_improve":"admin","assign_roles":"admin",
+        }
+        req = PERMISSIONS.get(perm)
+        if req and (ROLE_RANK.get(self.role, -1) >= ROLE_RANK.get(req, 99)):
+            return True
+        if self.extra_permissions and perm in self.extra_permissions:
+            return True
+        return False
+
 
 def authenticate_user(username: str, password: str) -> Optional[dict]:
-    """Verify credentials. Returns user record dict or None."""
-    users = _load_users()
-    user = users.get(username)
+    user = get_user(username)
     if not user:
         return None
     if not user.get("active", True):
         return None
-    if not _verify_password(password, user["password_hash"], user["salt"]):
+    if not verify_password(password, user.get("password_hash", "")):
         return None
     return user
 
-def login(username: str, password: str) -> LoginResponse:
-    user = authenticate_user(username, password)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect username or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    token = create_access_token({"sub": username, "role": user["role"]})
-    return LoginResponse(
-        access_token=token,
-        username=username,
-        role=user["role"],
-        display_name=user.get("display_name"),
-    )
 
-# ─── FastAPI Dependencies ─────────────────────────────────────────────────────
-
-async def get_current_user(token: Optional[str] = Depends(oauth2_scheme)) -> UserToken:
-    """Dependency: injects UserToken or raises 401."""
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserToken:
     if not token:
-        raise credentials_exception
-    payload = decode_access_token(token)
-    if payload is None:
-        raise credentials_exception
-    username: str = payload.get("sub")
-    role: str = payload.get("role", "viewer")
-    if not username:
-        raise credentials_exception
-    users = _load_users()
-    user = users.get(username)
-    if not user or not user.get("active", True):
-        raise credentials_exception
-    return UserToken(username=username, role=role, display_name=user.get("display_name"))
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Not authenticated",
+                            headers={"WWW-Authenticate": "Bearer"})
+    payload = decode_token(token)
+    if not payload or "sub" not in payload:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Invalid or expired token")
+    exp = payload.get("exp", 0)
+    if exp and time.time() > exp:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Token expired")
+    # Load fresh user to pick up latest role/extra_permissions
+    user = get_user(payload["sub"])
+    role  = user["role"] if user else payload.get("role", "viewer")
+    extra = user.get("extra_permissions", []) if user else []
+    return UserToken(username=payload["sub"], role=role, extra_permissions=extra)
 
-def require_role(minimum_role: str):
-    """
-    FastAPI Depends factory. Restricts endpoint to users with at least `minimum_role`.
 
-    Example:
-        @router.post("/run")
-        async def run_task(user: UserToken = Depends(require_role("operator"))):
-            ...
-    """
-    min_level = _role_level(minimum_role)
-    if min_level < 0:
-        raise ValueError(f"Unknown role: {minimum_role}. Valid: {ROLE_HIERARCHY}")
-
-    async def _check(current_user: UserToken = Depends(get_current_user)) -> UserToken:
-        if _role_level(current_user.role) < min_level:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Requires '{minimum_role}' role or higher. Your role: '{current_user.role}'",
-            )
-        return current_user
-
+def require_role(min_role: str):
+    """Dependency factory — rejects requests below the required role."""
+    async def _check(current: UserToken = Depends(get_current_user)) -> UserToken:
+        if ROLE_RANK.get(current.role, -1) < ROLE_RANK.get(min_role, 99):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                                detail=f"Requires role: {min_role} or higher")
+        return current
     return _check
-
-# ─── User Management (admin operations) ──────────────────────────────────────
-
-def list_users() -> list[UserRecord]:
-    users = _load_users()
-    return [
-        UserRecord(
-            username=u,
-            display_name=data.get("display_name"),
-            role=data["role"],
-            active=data.get("active", True),
-        )
-        for u, data in users.items()
-    ]
-
-def create_user(req: CreateUserRequest) -> UserRecord:
-    if req.role not in ROLE_HIERARCHY:
-        raise HTTPException(status_code=400, detail=f"Invalid role. Choose: {ROLE_HIERARCHY}")
-    users = _load_users()
-    if req.username in users:
-        raise HTTPException(status_code=409, detail=f"User '{req.username}' already exists")
-    hashed, salt = _hash_password(req.password)
-    users[req.username] = {
-        "password_hash": hashed,
-        "salt": salt,
-        "role": req.role,
-        "display_name": req.display_name or req.username,
-        "active": True,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    _save_users(users)
-    return UserRecord(username=req.username, role=req.role,
-                      display_name=req.display_name, active=True)
-
-def update_user(username: str, req: UpdateUserRequest) -> UserRecord:
-    users = _load_users()
-    if username not in users:
-        raise HTTPException(status_code=404, detail=f"User '{username}' not found")
-    user = users[username]
-    if req.role is not None:
-        if req.role not in ROLE_HIERARCHY:
-            raise HTTPException(status_code=400, detail=f"Invalid role. Choose: {ROLE_HIERARCHY}")
-        user["role"] = req.role
-    if req.display_name is not None:
-        user["display_name"] = req.display_name
-    if req.active is not None:
-        user["active"] = req.active
-    if req.password is not None:
-        hashed, salt = _hash_password(req.password)
-        user["password_hash"] = hashed
-        user["salt"] = salt
-    users[username] = user
-    _save_users(users)
-    return UserRecord(username=username, role=user["role"],
-                      display_name=user.get("display_name"), active=user.get("active", True))
-
-def delete_user(username: str) -> None:
-    users = _load_users()
-    if username not in users:
-        raise HTTPException(status_code=404, detail=f"User '{username}' not found")
-    del users[username]
-    _save_users(users)
