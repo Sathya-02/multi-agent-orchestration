@@ -1,154 +1,95 @@
+/**
+ * ToolsPanel.jsx  (RBAC-gated)
+ *
+ * viewer   : read-only list, no toggles
+ * operator : can toggle tools on/off
+ * admin    : toggle + pending tool spawn approval
+ */
 import '../../styles/App.css'
+import { useAuth } from '../../auth.jsx'
+import { can } from '../../rbac.js'
 
 export default function ToolsPanel({
-  tools, toolTab, setToolTab,
-  editingTool, setEditingTool, newToolForm, setNewToolForm,
-  toolMdText, setToolMdText, toolMdSaving, toolMdId,
-  pendingToolSpawns,
-  handleCreateTool, handleUpdateTool, handleDeleteTool,
-  handleToggleToolActive, handleOpenToolMd, handleSaveToolMd,
-  handleToolSpawnDecision,
+  tools, pendingToolSpawns,
+  handleToggleTool, handleApproveToolSpawn, handleDenyToolSpawn,
   onClose
 }) {
-  const form    = editingTool || newToolForm
-  const setForm = (patch) => editingTool
-    ? setEditingTool({ ...editingTool, ...patch })
-    : setNewToolForm({ ...newToolForm, ...patch })
-
-  const Field = ({ label, field, placeholder, multiline }) => (
-    <div style={{ display:'flex', flexDirection:'column', gap:3, marginBottom:8 }}>
-      <label style={{ fontSize:'10px', color:'var(--tx-muted)', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.08em' }}>{label}</label>
-      {multiline
-        ? <textarea className="topic-input code-editor" value={form[field] ?? ''} onChange={e => setForm({ [field]: e.target.value })} placeholder={placeholder} rows={8} />
-        : <input    className="topic-input"              value={form[field] ?? ''} onChange={e => setForm({ [field]: e.target.value })} placeholder={placeholder} />
-      }
-    </div>
-  )
+  const { user } = useAuth()
+  const canToggle  = can(user, 'approve_spawn')   // operator+
+  const canApprove = can(user, 'approve_spawn')
 
   return (
-    <div className="overlay-panel tool-panel">
+    <div className="overlay-panel tools-panel">
       <div className="overlay-header">
-        <span>🔧 Custom Tools</span>
+        <span>🔧 Tools <span style={{ fontSize:11, color:'var(--tx-muted)', fontWeight:400 }}>({tools.length})</span></span>
         <button className="overlay-close" onClick={onClose}>✕</button>
       </div>
 
-      {/* Tabs */}
-      <div className="agent-tabs">
-        {['list','create','toolmd','spawns'].map(t => (
-          <button key={t} className={`agent-tab${toolTab === t ? ' active' : ''}`} onClick={() => setToolTab(t)}>
-            {{
-              list:   `📋 Tools (${tools.length})`,
-              create: editingTool ? '✏️ Edit' : '➕ Create',
-              toolmd: '📄 TOOL.md',
-              spawns: `🔔 Spawns${pendingToolSpawns.length ? ` (${pendingToolSpawns.length})` : ''}`,
-            }[t]}
-          </button>
+      {/* Pending tool spawn requests */}
+      {pendingToolSpawns?.length > 0 && (
+        <div style={{ padding:'10px 14px', borderBottom:'1px solid var(--bd-subtle)' }}>
+          <div style={{ fontSize:10, fontWeight:700, textTransform:'uppercase', letterSpacing:'0.08em', color:'var(--tx-muted)', marginBottom:8 }}>
+            ⏳ Pending Tool Requests
+          </div>
+          {pendingToolSpawns.map((s, i) => (
+            <div key={i} style={{ display:'flex', alignItems:'center', gap:8, marginBottom:6, fontSize:12 }}>
+              <span style={{ flex:1, color:'var(--tx-secondary)' }}>{s.name || s.tool_name || `Tool #${i+1}`}</span>
+              {canApprove ? (
+                <>
+                  <button className="agent-action-btn" onClick={() => handleApproveToolSpawn(s)}>✅ Approve</button>
+                  <button className="agent-action-btn danger" onClick={() => handleDenyToolSpawn(s)}>✕ Deny</button>
+                </>
+              ) : (
+                <span style={{ fontSize:11, color:'var(--tx-muted)' }}>Operator+ required</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {!canToggle && (
+        <div style={{ ...viewerBanner, margin:'10px 14px 0' }}>🔒 Tool toggles require Operator or Admin role.</div>
+      )}
+
+      {/* Tool list */}
+      <div style={{ flex:1, overflowY:'auto', padding:'10px 14px' }}>
+        {tools.length === 0 && <div className="empty-hint">No tools registered.</div>}
+        {tools.map((t, i) => (
+          <div key={t.name || i} style={{
+            display:'flex', alignItems:'center', gap:10, padding:'8px 10px',
+            borderRadius:7, marginBottom:6,
+            background:'rgba(255,255,255,0.03)', border:'1px solid var(--bd-subtle)'
+          }}>
+            <span style={{ fontSize:18 }}>{t.icon || '🔧'}</span>
+            <div style={{ flex:1, minWidth:0 }}>
+              <div style={{ fontSize:13, fontWeight:600, color:'var(--tx-primary)' }}>{t.name}</div>
+              {t.description && <div style={{ fontSize:11, color:'var(--tx-muted)', marginTop:2 }}>{t.description}</div>}
+              {Array.isArray(t.tags) && t.tags.length > 0 && (
+                <div className="tool-tags" style={{ marginTop:4 }}>
+                  {t.tags.map(tg => <span key={tg} className="tool-tag">{tg}</span>)}
+                </div>
+              )}
+            </div>
+            {canToggle ? (
+              <button
+                className={`si-toggle ${t.enabled !== false ? 'on' : 'off'}`}
+                onClick={() => handleToggleTool(t.name)}
+                title={t.enabled !== false ? 'Disable tool' : 'Enable tool'}>
+                {t.enabled !== false ? '🟢' : '🔴'}
+              </button>
+            ) : (
+              <span style={{ fontSize:16 }}>{t.enabled !== false ? '🟢' : '🔴'}</span>
+            )}
+          </div>
         ))}
       </div>
-
-      {/* ── LIST ── */}
-      {toolTab === 'list' && (
-        <div style={{ padding:'10px 14px', overflowY:'auto', flex:1 }}>
-          {tools.length === 0 && <div className="empty-hint">No custom tools yet.</div>}
-          {tools.map(tool => (
-            <div key={tool.id} className={`tool-list-item${tool.active === false ? ' inactive' : ''}`}>
-              <div className="tool-info">
-                <div className="tool-name">{tool.display_name || tool.name}</div>
-                {tool.description && <div className="tool-desc">{tool.description}</div>}
-                {tool.tags?.length > 0 && (
-                  <div className="tool-tags">
-                    {tool.tags.map(tag => <span key={tag} className="tool-tag">{tag}</span>)}
-                  </div>
-                )}
-              </div>
-              <div className="agent-actions">
-                <button className="agent-action-btn" onClick={() => { setEditingTool({...tool}); setToolTab('create') }}>✏️</button>
-                <button className="agent-action-btn" onClick={() => handleToggleToolActive(tool)}>
-                  {tool.active === false ? '▶' : '⏸'}
-                </button>
-                <button className="agent-action-btn" title="Edit TOOL.md" onClick={() => handleOpenToolMd(tool)}>📄</button>
-                <button className="agent-action-btn danger" onClick={() => handleDeleteTool(tool.id)}>🗑</button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* ── CREATE / EDIT ── */}
-      {toolTab === 'create' && (
-        <div className="agent-form">
-          {editingTool && (
-            <div style={{ padding:'6px 12px', background:'rgba(58,127,255,0.08)', borderRadius:6, marginBottom:8, fontSize:11, color:'#80b4ff', display:'flex', justifyContent:'space-between', alignItems:'center' }}>
-              <span>Editing: <strong>{editingTool.display_name || editingTool.name}</strong></span>
-              <button style={{ background:'none', border:'none', color:'var(--tx-muted)', cursor:'pointer' }} onClick={() => setEditingTool(null)}>✕</button>
-            </div>
-          )}
-          <Field label="Name (slug)"    field="name"         placeholder="my_tool" />
-          <Field label="Display Name"   field="display_name" placeholder="My Tool" />
-          <Field label="Description"    field="description"  placeholder="What this tool does" />
-          <Field label="Tags (comma-sep)" field="tags"       placeholder="search, data" />
-          <Field label="Python Code (body of run(input_data))" field="code" placeholder="    return str(input_data)" multiline />
-          <button className="agent-save-btn" onClick={editingTool ? handleUpdateTool : handleCreateTool}>
-            {editingTool ? '💾 Save Changes' : '➕ Create Tool'}
-          </button>
-        </div>
-      )}
-
-      {/* ── TOOL.MD ── */}
-      {toolTab === 'toolmd' && (
-        <div style={{ padding:'12px 16px', display:'flex', flexDirection:'column', flex:1, gap:8 }}>
-          {!toolMdId ? (
-            <div className="empty-hint">
-              Select a tool from the 📋 Tools list and click 📄 to edit its TOOL.md.
-            </div>
-          ) : (
-            <>
-              <div style={{ fontSize:11, color:'var(--tx-muted)' }}>
-                Editing <strong>TOOL.md</strong> for tool: <code style={{ fontFamily:'var(--mono)', color:'var(--accent)' }}>{toolMdId}</code>
-              </div>
-              <textarea
-                className="code-editor toolmd-editor"
-                value={toolMdText}
-                onChange={e => setToolMdText(e.target.value)}
-                rows={18}
-                placeholder="# Tool Name&#10;&#10;## Description&#10;&#10;## Parameters&#10;&#10;## Examples&#10;"
-              />
-              <button className="agent-save-btn" onClick={handleSaveToolMd} disabled={toolMdSaving}>
-                {toolMdSaving ? '⟳ Saving…' : '💾 Save TOOL.md'}
-              </button>
-            </>
-          )}
-        </div>
-      )}
-
-      {/* ── SPAWNS ── */}
-      {toolTab === 'spawns' && (
-        <div style={{ padding:'12px 16px', overflowY:'auto', flex:1 }}>
-          {pendingToolSpawns.length === 0 && (
-            <div className="empty-hint">No pending tool spawn requests.</div>
-          )}
-          {pendingToolSpawns.map(r => (
-            <div key={r.request_id} className="tool-spawn-banner">
-              <div style={{ fontSize:11, fontWeight:800, color:'#6ee7b7', marginBottom:4 }}>🔧 TOOL SPAWN REQUEST</div>
-              <div style={{ fontSize:13, fontWeight:700, color:'var(--tx-primary)', marginBottom:2 }}>
-                {r.suggestion?.name || r.name || '?'}
-              </div>
-              <div style={{ fontSize:11, color:'var(--tx-secondary)', marginBottom:8 }}>
-                {r.suggestion?.description || r.reason || ''}
-              </div>
-              {r.suggestion?.code && (
-                <pre style={{ fontFamily:'var(--mono)', fontSize:'10px', color:'var(--tx-secondary)', background:'var(--bg-input)', padding:'6px 10px', borderRadius:5, marginBottom:8, overflowX:'auto' }}>
-                  {r.suggestion.code}
-                </pre>
-              )}
-              <div style={{ display:'flex', gap:7 }}>
-                <button className="spawn-approve-btn" onClick={() => handleToolSpawnDecision(r.request_id, true)}>✓ Approve</button>
-                <button className="spawn-reject-btn"  onClick={() => handleToolSpawnDecision(r.request_id, false)}>✗ Reject</button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
     </div>
   )
+}
+
+const viewerBanner = {
+  padding: '8px 12px', borderRadius: 7,
+  background: 'rgba(99,102,241,0.08)',
+  border: '1px solid rgba(99,102,241,0.2)',
+  color: '#a5b4fc', fontSize: 12,
 }
