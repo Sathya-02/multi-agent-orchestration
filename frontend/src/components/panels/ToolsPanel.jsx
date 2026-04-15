@@ -3,7 +3,7 @@ import '../../styles/App.css'
 export default function ToolsPanel({
   tools, toolTab, setToolTab,
   editingTool, setEditingTool, newToolForm, setNewToolForm,
-  toolMdText, setToolMdText, toolMdSaving,
+  toolMdText, setToolMdText, toolMdSaving, toolMdId,
   pendingToolSpawns,
   handleCreateTool, handleUpdateTool, handleDeleteTool,
   handleToggleToolActive, handleOpenToolMd, handleSaveToolMd,
@@ -35,11 +35,7 @@ export default function ToolsPanel({
       {/* Tabs */}
       <div className="agent-tabs">
         {['list','create','toolmd','spawns'].map(t => (
-          <button key={t} className={`agent-tab${toolTab === t ? ' active' : ''}`} onClick={() => {
-            // If switching to toolmd tab directly and no tool is loaded yet, do nothing special
-            // (user must click 📄 on a tool row first — or show a hint)
-            setToolTab(t)
-          }}>
+          <button key={t} className={`agent-tab${toolTab === t ? ' active' : ''}`} onClick={() => setToolTab(t)}>
             {{
               list:   `📋 Tools (${tools.length})`,
               create: editingTool ? '✏️ Edit' : '➕ Create',
@@ -70,7 +66,7 @@ export default function ToolsPanel({
                 <button className="agent-action-btn" onClick={() => handleToggleToolActive(tool)}>
                   {tool.active === false ? '▶' : '⏸'}
                 </button>
-                <button className="agent-action-btn" onClick={() => handleOpenToolMd(tool)}>📄</button>
+                <button className="agent-action-btn" title="Edit TOOL.md" onClick={() => handleOpenToolMd(tool)}>📄</button>
                 <button className="agent-action-btn danger" onClick={() => handleDeleteTool(tool.id)}>🗑</button>
               </div>
             </div>
@@ -102,21 +98,20 @@ export default function ToolsPanel({
       {toolTab === 'toolmd' && (
         <div style={{ padding:'12px 16px', display:'flex', flexDirection:'column', flex:1, gap:8 }}>
           {!toolMdId ? (
-            // ADD THIS EMPTY STATE
             <div className="empty-hint">
               Select a tool from the 📋 Tools list and click 📄 to edit its TOOL.md.
             </div>
           ) : (
             <>
               <div style={{ fontSize:11, color:'var(--tx-muted)' }}>
-                Editing <strong>TOOL.md</strong> — describe usage, params, examples
+                Editing <strong>TOOL.md</strong> for tool: <code style={{ fontFamily:'var(--mono)', color:'var(--accent)' }}>{toolMdId}</code>
               </div>
               <textarea
                 className="code-editor toolmd-editor"
                 value={toolMdText}
                 onChange={e => setToolMdText(e.target.value)}
                 rows={18}
-                placeholder="# Tool Name\n\n## Description\n\n## Parameters\n\n## Examples\n"
+                placeholder="# Tool Name&#10;&#10;## Description&#10;&#10;## Parameters&#10;&#10;## Examples&#10;"
               />
               <button className="agent-save-btn" onClick={handleSaveToolMd} disabled={toolMdSaving}>
                 {toolMdSaving ? '⟳ Saving…' : '💾 Save TOOL.md'}
