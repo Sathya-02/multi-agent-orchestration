@@ -1,0 +1,29 @@
+{
+  "admin": {
+    "password_hash": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
+    "salt": "default_salt_change_me",
+    "role": "admin",
+    "display_name": "Administrator",
+    "active": true,
+    "note": "Default admin — password is 'password'. CHANGE IMMEDIATELY via POST /auth/users/{username}",
+    "created_at": "2026-04-15T00:00:00+00:00"
+  },
+  "operator": {
+    "password_hash": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
+    "salt": "default_salt_change_me",
+    "role": "operator",
+    "display_name": "Operator User",
+    "active": true,
+    "note": "Demo operator — password is 'password'. Change before use.",
+    "created_at": "2026-04-15T00:00:00+00:00"
+  },
+  "viewer": {
+    "password_hash": "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8",
+    "salt": "default_salt_change_me",
+    "role": "viewer",
+    "display_name": "Read-Only Viewer",
+    "active": true,
+    "note": "Demo viewer — password is 'password'. Change before use.",
+    "created_at": "2026-04-15T00:00:00+00:00"
+  }
+}
