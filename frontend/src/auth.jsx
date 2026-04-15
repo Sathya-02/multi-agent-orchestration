@@ -1,169 +1,63 @@
 /**
- * auth.jsx — Auth context + hooks
+ * auth.jsx — Authentication context for the MAO frontend
  *
- * Token persistence strategy:
- *   - sessionStorage  (default)  — survives page reload, cleared when tab closes
- *   - localStorage   (remember me) — survives browser restart, cleared on logout
+ * Provides:
+ *   useAuth()  → { user, loginLocal, loginGoogle, logout, authHeaders, refreshUser, authError, setAuthError }
+ *   <AuthProvider>   — wrap around <App />
+ *   <RequireAuth>    — redirects unauthenticated users to <LoginPage />
  *
- * On mount, AuthProvider re-hydrates the in-memory token from storage BEFORE
- * calling /auth/me, so the Bearer header is always present after a reload.
+ * Token storage:
+ *   - sessionStorage by default (survives reload, cleared on tab close)
+ *   - localStorage if the user checks "Remember me" (survives browser restart)
+ *
+ * On mount, _hydrateToken() reads any persisted token back into memory so
+ * that authHeaders() always returns a valid Bearer token after a page reload.
  */
-import { createContext, useContext, useEffect, useState, useCallback } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import LoginPage from './components/LoginPage.jsx'
 
-const API_BASE =
-  (typeof __API_URL__ !== 'undefined' && __API_URL__)
-    ? __API_URL__
-    : (import.meta.env.VITE_API_URL || '')
+const API_BASE   = (import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+const AUTH_BASE  = `${API_BASE}/auth`
+const TOKEN_KEY  = 'mao_auth_token'
+const PERSIST_KEY= 'mao_auth_persist'
 
-const TOKEN_KEY = 'mao_token'
-const REMEMBER_KEY = 'mao_remember'
-
-// ─── In-memory token (module-level, also backed by storage) ──────────────────
-
+// ── In-memory token (fast path for authHeaders()) ──────────────────────────
 let _memToken = null
 
-/** Read token from storage → memory on app start. Call once before any fetch. */
 function _hydrateToken() {
-  try {
-    const remember = localStorage.getItem(REMEMBER_KEY) === 'true'
-    const stored = remember
-      ? localStorage.getItem(TOKEN_KEY)
-      : sessionStorage.getItem(TOKEN_KEY)
-    if (stored) _memToken = stored
-  } catch {}
-}
-
-export function getToken() { return _memToken }
-
-export function setToken(token, remember = false) {
-  _memToken = token
-  try {
-    if (remember) {
-      localStorage.setItem(REMEMBER_KEY, 'true')
-      localStorage.setItem(TOKEN_KEY, token)
-      sessionStorage.removeItem(TOKEN_KEY)
-    } else {
-      localStorage.removeItem(REMEMBER_KEY)
-      localStorage.removeItem(TOKEN_KEY)
-      sessionStorage.setItem(TOKEN_KEY, token)
-    }
-  } catch {}
-}
-
-export function clearToken() {
-  _memToken = null
-  try {
-    sessionStorage.removeItem(TOKEN_KEY)
-    localStorage.removeItem(TOKEN_KEY)
-    localStorage.removeItem(REMEMBER_KEY)
-  } catch {}
-}
-
-export function authHeaders(extra = {}) {
+  if (_memToken) return _memToken
+  // prefer localStorage ("remember me") → fall back to sessionStorage
+  _memToken = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || null
   return _memToken
-    ? { Authorization: `Bearer ${_memToken}`, ...extra }
-    : extra
 }
 
+function _storeToken(token, persist) {
+  _memToken = token
+  if (persist) {
+    localStorage.setItem(TOKEN_KEY, token)
+    localStorage.setItem(PERSIST_KEY, '1')
+    sessionStorage.removeItem(TOKEN_KEY)
+  } else {
+    sessionStorage.setItem(TOKEN_KEY, token)
+    localStorage.removeItem(TOKEN_KEY)
+    localStorage.removeItem(PERSIST_KEY)
+  }
+}
+
+function _clearToken() {
+  _memToken = null
+  sessionStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem(PERSIST_KEY)
+}
+
+export function authHeaders() {
+  const t = _hydrateToken()
+  return t ? { Authorization: `Bearer ${t}` } : {}
+}
+
+// ── Context ────────────────────────────────────────────────────────────────
 const AuthContext = createContext(null)
-
-export function getUserInitials(user) {
-  if (!user) return '?'
-  const name = user.display_name || user.name || user.email || user.username || ''
-  if (!name) return '?'
-  return name
-    .split(' ')
-    .filter(Boolean)
-    .slice(0, 2)
-    .map(p => p[0].toUpperCase())
-    .join('')
-}
-
-export function AuthProvider({ children }) {
-  const [user,        setUser]        = useState(null)
-  const [authLoading, setAuthLoading] = useState(true)
-  const [authError,   setAuthError]   = useState(null)
-
-  // Hydrate token from storage FIRST, then validate with backend
-  useEffect(() => {
-    _hydrateToken()   // ← re-populate _memToken before the fetch below
-
-    fetch(`${API_BASE}/auth/me`, {
-      credentials: 'include',
-      headers: authHeaders(),   // now carries the token even after reload
-    })
-      .then(r => (r.ok ? r.json() : null))
-      .then(u => {
-        if (u && typeof u === 'object' && u.username) {
-          setUser(u)
-        } else {
-          // Token present but rejected (expired / revoked) — clear storage
-          clearToken()
-          setUser(null)
-        }
-      })
-      .catch(() => {
-        setAuthError('Could not reach the backend at localhost:8000. Is it running?')
-        setUser(null)
-      })
-      .finally(() => setAuthLoading(false))
-  }, [])
-
-  /**
-   * Local JWT login.
-   * @param {string}  username
-   * @param {string}  password
-   * @param {boolean} remember  — persist across browser restarts via localStorage
-   */
-  const loginLocal = useCallback(async (username, password, remember = false) => {
-    setAuthError(null)
-    const body = new URLSearchParams({ username, password })
-    const res = await fetch(`${API_BASE}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      credentials: 'include',
-      body,
-    })
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}))
-      throw new Error(err.detail || 'Invalid username or password')
-    }
-    const data = await res.json()
-    setToken(data.access_token, remember)   // persist based on remember flag
-    setUser({
-      username:     data.username,
-      role:         data.role,
-      display_name: data.display_name || data.username,
-      name:         data.display_name || data.username,
-    })
-    return data
-  }, [])
-
-  const loginGoogle = useCallback(() => {
-    const base = API_BASE || 'http://localhost:8000'
-    window.location.href = `${base}/auth/login/google`
-  }, [])
-
-  const login = loginGoogle  // backward compat
-
-  const logout = useCallback(async () => {
-    clearToken()
-    await fetch(`${API_BASE}/auth/logout`, {
-      method: 'POST',
-      credentials: 'include',
-    }).catch(() => {})
-    setUser(null)
-  }, [])
-
-  return (
-    <AuthContext.Provider value={{
-      user, authLoading, authError, setAuthError,
-      loginLocal, loginGoogle, login, logout,
-    }}>
-      {children}
-    </AuthContext.Provider>
-  )
-}
 
 export function useAuth() {
   const ctx = useContext(AuthContext)
@@ -171,34 +65,105 @@ export function useAuth() {
   return ctx
 }
 
-import LoginPage from './components/LoginPage.jsx'
+export function getUserInitials(name) {
+  if (!name) return '?'
+  return name.split(/[\s._-]+/).map(p => p[0]).join('').slice(0, 2).toUpperCase()
+}
 
+// ── AuthProvider ───────────────────────────────────────────────────────────
+export function AuthProvider({ children }) {
+  const [user,      setUser]      = useState(null)
+  const [loading,   setLoading]   = useState(true)   // true until first /auth/me resolves
+  const [authError, setAuthError] = useState(null)
+
+  // Fetch current user from /auth/me (called on mount + after login)
+  const refreshUser = useCallback(async () => {
+    _hydrateToken()
+    if (!_memToken) { setUser(null); return null }
+    try {
+      const r = await fetch(`${AUTH_BASE}/me`, { headers: { Authorization: `Bearer ${_memToken}` } })
+      if (r.status === 401) { _clearToken(); setUser(null); return null }
+      const d = await r.json()
+      if (d.username) { setUser(d); return d }
+      _clearToken(); setUser(null); return null
+    } catch {
+      // network down — keep existing user if already authenticated
+      return user
+    }
+  }, [user])
+
+  // On mount: hydrate token → validate with /auth/me → set user
+  useEffect(() => {
+    (async () => {
+      setLoading(true)
+      await refreshUser()
+      setLoading(false)
+    })()
+  }, [])   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── loginLocal ────────────────────────────────────────────
+  const loginLocal = async (username, password, remember = false) => {
+    setAuthError(null)
+    const r = await fetch(`${AUTH_BASE}/login`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ username, password }),
+    })
+    const d = await r.json()
+    if (!r.ok) throw new Error(d.detail || d.error || 'Login failed')
+    _storeToken(d.token || d.access_token, remember)
+    const u = await refreshUser()
+    return u
+  }
+
+  // ── loginGoogle ───────────────────────────────────────────
+  const loginGoogle = () => {
+    window.location.href = `${AUTH_BASE}/google`
+  }
+
+  // ── logout ────────────────────────────────────────────────
+  const logout = () => {
+    _clearToken()
+    setUser(null)
+    setAuthError(null)
+  }
+
+  const value = {
+    user, loading, authError, setAuthError,
+    loginLocal, loginGoogle, logout, authHeaders, refreshUser,
+  }
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+}
+
+// ── RequireAuth ────────────────────────────────────────────────────────────
+// Wrap around any component tree that requires authentication.
+// Shows a full-screen loading state, then either renders children
+// (authenticated) or the LoginPage (unauthenticated).
 export function RequireAuth({ children }) {
-  const { user, authLoading } = useAuth()
+  const { user, loading } = useAuth()
 
-  if (authLoading) {
+  if (loading) {
     return (
       <div style={{
-        minHeight: '100vh', display: 'flex', alignItems: 'center',
-        justifyContent: 'center', background: '#0f1117',
+        minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'linear-gradient(135deg,#0f1117 0%,#1a1f2e 100%)',
+        fontFamily: "'Inter','Segoe UI',sans-serif",
       }}>
-        <div style={{ textAlign: 'center', color: '#94a3b8' }}>
-          <div style={{
-            width: 40, height: 40,
-            border: '3px solid #334155',
-            borderTop: '3px solid #6366f1',
-            borderRadius: '50%',
-            animation: 'spin 0.8s linear infinite',
-            margin: '0 auto 16px',
-          }} />
-          <p style={{ fontSize: 14 }}>Checking session…</p>
-          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        <div style={{ textAlign: 'center' }}>
+          <svg width="40" height="40" viewBox="0 0 40 40" fill="none" aria-hidden="true"
+            style={{ margin: '0 auto 16px', display: 'block' }}>
+            <rect width="40" height="40" rx="10" fill="#6366f1" opacity="0.2"/>
+            <circle cx="20" cy="14" r="5" stroke="#6366f1" strokeWidth="2" fill="none">
+              <animate attributeName="r" values="4;6;4" dur="1.2s" repeatCount="indefinite"/>
+            </circle>
+          </svg>
+          <p style={{ color: '#475569', fontSize: 14 }}>Checking session…</p>
         </div>
       </div>
     )
   }
 
   if (!user) return <LoginPage />
-
   return children
 }
