@@ -2,35 +2,11 @@
 agents_crew.py — Dynamic agent builder + job runner
 
 Fix history:
-  1. agent_activity events fire DURING execution via step/task callbacks
-  2. allow_delegation=False prevents CrewAI 0.51 hierarchical hang
-  3. Process.sequential enforced
-  4. step_callback handles list signature (CrewAI 0.51)
-  5. memory=False — skips RAGStorage / ChromaDB / embedchain init
-  6. OTEL_SDK_DISABLED + CREWAI_DISABLE_TELEMETRY set in main.py before
-     any crewai import so crew.kickoff() doesn't open an HTTP span to
-     telemetry.crewai.com:4319 (which times out ~10 s offline)
-  7. _broadcast is fire-and-forget — removed fut.result(timeout=2)
-  8. Tasks are built by tasks_crew.build_tasks() which owns all task
-     descriptions, context chaining, and format instructions.
-     agents_crew only owns: agent construction, callbacks, and kickoff.
-  9. summariser guaranteed in every agent's tool list so LLM can always
-     produce a Final Answer without looping.
- 10. max_iter=8, num_ctx=4096, num_predict=512, temperature=0.2 to prevent
-     Ollama silent hangs and reduce loop-backs on small models.
- 11. [FIX] step_callback now handles item.agent as Agent object (not just str)
-     — extracts .role attribute directly so per-agent attribution is correct.
- 12. [FIX] broadcast_fn lambda wrapped in try/except so closed-loop errors
-     surface in logs instead of being swallowed silently.
- 13. [FIX] completion broadcast only fires for agents that actually ran tasks,
-     not for every active agent regardless of participation.
- 14. [FIX] deprecated asyncio.get_event_loop() replaced with get_running_loop()
-     in the broadcast lambda passed to run_in_executor.
- 15. [FIX] step_callback emits ⚠️ activity event when iteration/time limit
-     sentinel string is detected — previously silently skipped.
- 16. [FIX] crew.kickoff() wrapped in try/except — emits ❌ activity event per
-     agent before re-raising so the feed always shows why the job stopped.
- 17. [FIX] DEFAULT_MAX_ITER raised 4 → 8 so small models reach Final Answer.
+  ... (see git log for full history)
+ 18. [FIX] DEFAULT_MAX_ITER raised 8 → 15; num_predict raised 512 → 1024;
+     temperature lowered 0.2 → 0.1 to stop 'iteration limit' sentinel from
+     appearing as task output. _make_task_callback now intercepts sentinel
+     strings and emits a warning instead of broadcasting garbage results.
 """
 import logging
 import time
@@ -73,12 +49,20 @@ FS_TOOL_MAP = {
 
 PHASE_ORDER = ["coordinator", "researcher", "analyst", "writer"]
 
-# FIX #17 — raised from 4 → 8 so small models (phi3:mini) have enough
-# headroom to reach a Final Answer on multi-step research tasks.
-DEFAULT_MAX_ITER = 8
+# FIX #18 — raised from 8 → 15 so agents on small models (phi3:mini, mistral)
+# have enough headroom to reach a Final Answer without hitting the limit.
+DEFAULT_MAX_ITER = 15
 
 # Sentinel substrings emitted by CrewAI when an agent exhausts its budget
-_LIMIT_SENTINELS = ("iteration limit", "time limit", "max iterations", "max_iterations")
+_LIMIT_SENTINELS = (
+    "iteration limit",
+    "time limit",
+    "max iterations",
+    "max_iterations",
+    "agent stopped due to",
+    "stopped due to iteration",
+    "stopped due to time",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -87,10 +71,14 @@ _LIMIT_SENTINELS = ("iteration limit", "time limit", "max iterations", "max_iter
 
 def build_agents(mode: str = "research") -> dict[str, Agent]:
     base_cfg = get_llm_config()
-    # Clamp generation params so Ollama never silently hangs
-    base_cfg.setdefault("num_ctx", 4096)
-    base_cfg.setdefault("num_predict", 512)
-    base_cfg.setdefault("temperature", 0.2)
+    # FIX #18 — increase num_predict so the LLM can complete multi-step
+    # reasoning in a single generation instead of truncating and looping.
+    # Lower temperature for more deterministic Final Answer outputs.
+    base_cfg["num_ctx"]     = base_cfg.get("num_ctx", 4096)
+    base_cfg["num_predict"] = max(base_cfg.get("num_predict", 0) or 0, 1024)
+    base_cfg["temperature"] = base_cfg.get("temperature") if base_cfg.get("temperature") is not None else 0.1
+    if base_cfg["temperature"] > 0.3:
+        base_cfg["temperature"] = 0.1  # clamp high values that cause looping
 
     llm = ChatOllama(**base_cfg)
 
@@ -180,49 +168,37 @@ def _emit_working(
     })
 
 
+def _is_sentinel(text: str) -> bool:
+    """Return True if text is a CrewAI iteration/time-limit sentinel string."""
+    low = text.lower()
+    return any(s in low for s in _LIMIT_SENTINELS)
+
+
 # ---------------------------------------------------------------------------
 # CrewAI step_callback factory
 # ---------------------------------------------------------------------------
 
 def _make_step_callback(
     broadcast_fn: Optional[Callable],
-    agents_map: dict,          # aid -> Agent
-    labels_map: dict,          # aid -> display label
+    agents_map: dict,
+    labels_map: dict,
     ordered_ids: list,
 ) -> Callable:
-    """
-    Single step_callback shared across the whole Crew.
-
-    CrewAI 0.51 passes either:
-      - A single AgentFinish / AgentAction object
-      - A list of the above
-
-    item.agent may be:
-      a) A plain role string  (e.g. 'Research Coordinator')
-      b) An Agent object      (has a .role attribute)
-      c) None / empty
-
-    We handle all three cases and map back to the agent_id.
-    """
-    # Build reverse map: role string (lower) -> agent_id
     role_to_id: dict[str, str] = {}
     for aid, agent in agents_map.items():
         role_to_id[agent.role.lower()] = aid
 
-    # Track which agent is currently active
     state = {"current": ordered_ids[0] if ordered_ids else ""}
 
     def _cb(step_output: Any) -> None:
         items = step_output if isinstance(step_output, list) else [step_output]
         for item in items:
-            # --- extract role from Agent object OR string ----------
             agent_str = ""
             try:
                 raw_agent = getattr(item, "agent", None)
                 if raw_agent is None:
                     agent_str = ""
                 elif hasattr(raw_agent, "role"):
-                    # item.agent is an Agent object — use .role directly
                     agent_str = str(raw_agent.role).strip().lower()
                 else:
                     agent_str = str(raw_agent).strip().lower()
@@ -230,12 +206,10 @@ def _make_step_callback(
                 pass
 
             if agent_str:
-                # Exact match first
                 matched = role_to_id.get(agent_str)
                 if matched:
                     state["current"] = matched
                 else:
-                    # Partial / substring match as fallback
                     for role, aid in role_to_id.items():
                         if agent_str in role or role in agent_str:
                             state["current"] = aid
@@ -244,7 +218,6 @@ def _make_step_callback(
             aid   = state["current"]
             label = labels_map.get(aid, aid)
 
-            # Extract text from item
             text = ""
             try:
                 if hasattr(item, "log") and item.log:
@@ -258,9 +231,6 @@ def _make_step_callback(
             except Exception:
                 pass
 
-            # FIX #15 — detect iteration/time-limit sentinel strings that
-            # CrewAI embeds in step output and emit them as visible ⚠️ events
-            # instead of silently skipping the empty/useless step.
             if not text:
                 raw_str = ""
                 try:
@@ -298,6 +268,23 @@ def _make_task_callback(
                 text = str(task_output.result).strip()
             else:
                 text = str(task_output).strip()
+
+            # FIX #18 — if the task output IS a sentinel string (e.g.
+            # "Agent stopped due to iteration limit or time limit."),
+            # do NOT broadcast it as a valid result. Emit a warning
+            # instead so the feed shows the real cause clearly.
+            if _is_sentinel(text):
+                logger.warning(
+                    "Agent %s task output was a limit sentinel: %s", agent_id, text
+                )
+                _emit_activity(
+                    broadcast_fn, agent_id, label,
+                    f"\u26a0\ufe0f {label} hit iteration/time limit before finishing. "
+                    f"Consider using a larger model or reducing task complexity.",
+                    phase=False, task_result=False,
+                )
+                return  # do NOT emit as task_result
+
             if len(text) > 400:
                 text = text[:397] + "\u2026"
             _emit_activity(
@@ -327,15 +314,14 @@ def run_crew(
     spawn_requests: Optional[List[Dict]] = None,
     spawn_enabled: bool = True,
 ) -> tuple[str, str, str, int, int]:
-    from tasks_crew import build_tasks  # Import here to avoid circular imports
+    from tasks_crew import build_tasks
 
     uploaded_files = uploaded_files or []
     report_dir = report_dir or Path("reports")
     report_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("run_crew started \u2014 topic=%r mode=%s model=%s", topic, mode, model)
+    logger.info("run_crew started — topic=%r mode=%s model=%s", topic, mode, model)
 
-    # ---- Build agents -------------------------------------------------------
     agents_map = build_agents(mode=mode)
     if not agents_map:
         raise RuntimeError(
@@ -350,11 +336,9 @@ def run_crew(
 
     labels_map = {aid: _label(aid) for aid in agents_map}
 
-    # ---- Emit "queued" activity for every agent ----------------------------
     for aid, label in labels_map.items():
         _emit_activity(broadcast_fn, aid, label, f"\U0001f7e1 {label} queued", phase=True)
 
-    # ---- Build tasks via tasks_crew (single source of truth) ---------------
     tasks = build_tasks(
         topic          = topic,
         agents         = agents_map,
@@ -362,17 +346,14 @@ def run_crew(
         uploaded_files = uploaded_files,
     )
 
-    # ---- Attach per-task callback so we emit a completion event per task ---
     for task in tasks:
         if task.agent:
             aid   = next((k for k, v in agents_map.items() if v is task.agent), "")
             label = labels_map.get(aid, str(task.agent.role))
             task.callback = _make_task_callback(broadcast_fn, aid, label)
 
-    # ---- Collect which Agent objects actually have tasks (for completion) --
     agents_with_tasks: set = {task.agent for task in tasks if task.agent is not None}
 
-    # ---- Ordered agent list for step_callback ------------------------------
     available_ids = list(agents_map.keys())
     phase_ids     = [p for p in PHASE_ORDER if p in available_ids]
     extra_ids     = [a for a in available_ids if a not in PHASE_ORDER]
@@ -380,7 +361,6 @@ def run_crew(
 
     agent_list = [agents_map[aid] for aid in ordered_ids if aid in agents_map]
 
-    # ---- Announce first agent starting ------------------------------------
     if ordered_ids:
         first_aid   = ordered_ids[0]
         first_label = labels_map.get(first_aid, first_aid)
@@ -391,7 +371,6 @@ def run_crew(
         )
         _emit_working(broadcast_fn, first_aid, first_label, "Thinking\u2026")
 
-    # ---- Build and kick off the crew ---------------------------------------
     step_cb = _make_step_callback(broadcast_fn, agents_map, labels_map, ordered_ids)
 
     crew = Crew(
@@ -403,23 +382,18 @@ def run_crew(
         verbose       = True,
     )
 
-    logger.info("Kicking off crew \u2014 %d agents / %d tasks", len(agent_list), len(tasks))
+    logger.info("Kicking off crew — %d agents / %d tasks", len(agent_list), len(tasks))
 
-    # FIX #16 — wrap kickoff so ANY CrewAI exception (MaxIterationsExceeded,
-    # timeout, LLM error) emits a visible ❌ event in the activity feed
-    # before re-raising to main.py's job_failed broadcast.
     try:
         result_obj = crew.kickoff()
     except Exception as crew_exc:
         err_str = str(crew_exc)
         logger.error("crew.kickoff() raised: %s", err_str)
-        # Determine which agents were active for error attribution
         active_aids = [aid for aid in ordered_ids if agents_map.get(aid) in agents_with_tasks]
         if not active_aids:
-            active_aids = ordered_ids[:1]  # fallback: first agent
+            active_aids = ordered_ids[:1]
         for aid in active_aids:
             label = labels_map.get(aid, aid)
-            # Show ⚠️ for limit errors, ❌ for everything else
             if any(s in err_str.lower() for s in _LIMIT_SENTINELS):
                 _emit_activity(
                     broadcast_fn, aid, label,
@@ -433,17 +407,15 @@ def run_crew(
                     f"\u274c {label} failed: {err_str[:200]}",
                     phase=False,
                 )
-        raise  # re-raise so main.py still broadcasts job_failed
+        raise
 
     result_text = str(result_obj) if result_obj else "No output produced."
 
-    # ---- Save report -------------------------------------------------------
     report_filename = f"report_{uuid.uuid4().hex[:8]}.md"
     report_path     = report_dir / report_filename
     report_path.write_text(result_text, encoding="utf-8")
     logger.info("Report saved: %s", report_path)
 
-    # ---- Emit completion ONLY for agents that actually ran tasks -----------
     for aid in ordered_ids:
         if agents_map.get(aid) in agents_with_tasks:
             label = labels_map.get(aid, aid)
