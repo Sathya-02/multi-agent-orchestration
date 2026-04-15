@@ -6,8 +6,12 @@ Fix history:
  18. [FIX] DEFAULT_MAX_ITER raised 8 → 15; num_predict raised 512 → 1024;
      temperature lowered 0.2 → 0.1.
  19. [FIX] Report filename: report_YYYYMMDD_HHMMSS_<slug>.txt
-     Report content: canonical header + LLM body + metadata footer,
-     matching the reference format in the attached sample report.
+     Report content: canonical header + LLM body + metadata footer.
+ 20. [FIX] AgentAction _Exception / ReAct format failures.
+     - REACT_FORMAT_REMINDER appended to every agent backstory.
+     - max_rpm=None, respect_context_window=True on every Agent.
+     - temperature hard-clamped to 0.1.
+     - DEFAULT_MAX_ITER raised 15 → 20.
 """
 import logging
 import re
@@ -52,7 +56,7 @@ FS_TOOL_MAP = {
 
 PHASE_ORDER = ["coordinator", "researcher", "analyst", "writer"]
 
-DEFAULT_MAX_ITER = 15
+DEFAULT_MAX_ITER = 20   # raised from 15 — gives agents a full ReAct cycle budget
 
 _LIMIT_SENTINELS = (
     "iteration limit",
@@ -64,13 +68,45 @@ _LIMIT_SENTINELS = (
     "stopped due to time",
 )
 
+# ---------------------------------------------------------------------------
+# ReAct format reminder — appended to EVERY agent backstory.
+# This is the primary fix for AgentAction(tool='_Exception', ...) errors.
+# The LLM must see these rules in its context on every generation.
+# ---------------------------------------------------------------------------
+REACT_FORMAT_REMINDER = """
+
+CRITICAL OUTPUT FORMAT RULES (follow exactly every single response):
+You must use this strict ReAct format. Never deviate:
+
+  Thought: <your reasoning here>
+  Action: <tool name exactly as listed>
+  Action Input: <the input string for the tool>
+
+After receiving the Observation, continue with:
+  Thought: <what you learned>
+  Action: <next tool> or write Final Answer
+
+When you have enough information, end with:
+  Thought: I now know the final answer.
+  Final Answer: <your complete response here>
+
+RULES:
+- NEVER skip the 'Action:' line after 'Thought:'.
+- NEVER repeat a tool call with the same input.
+- NEVER output JSON, markdown code fences, or extra text outside this format
+  while still in the Thought/Action loop.
+- If you cannot use a tool, go directly to Final Answer.
+- 'Action:' must contain ONLY the exact tool name (e.g. web_search), nothing else.
+- 'Action Input:' must be on its own line immediately after 'Action:'.
+"""
+
 
 # ---------------------------------------------------------------------------
 # Report helpers
 # ---------------------------------------------------------------------------
 
 def _topic_slug(topic: str, max_len: int = 60) -> str:
-    """Convert topic to a safe filename slug, e.g. 'Impact_of_AI_on_software_development'."""
+    """Convert topic to a safe filename slug."""
     slug = re.sub(r"[^\w\s-]", "", topic.strip())
     slug = re.sub(r"[\s]+", "_", slug)
     slug = re.sub(r"[_]{2,}", "_", slug)
@@ -87,12 +123,11 @@ def _build_report_text(
     temperature: float,
     num_ctx: int,
 ) -> str:
-    """Wrap LLM body in the canonical report header + metadata footer."""
+    """Wrap LLM body in canonical report header + metadata footer."""
     sep = "=" * 60
     timestamp = generated.strftime("%Y-%m-%d %H:%M:%S")
     agents_str = ", ".join(active_labels) if active_labels else "N/A"
 
-    # Strip a leading "FORMAT: xxx" line emitted by the writer task
     body_lines = body.strip().splitlines()
     if body_lines and body_lines[0].strip().upper().startswith("FORMAT:"):
         body_lines = body_lines[1:]
@@ -133,9 +168,8 @@ def build_agents(mode: str = "research") -> dict[str, Agent]:
     base_cfg = get_llm_config()
     base_cfg["num_ctx"]     = base_cfg.get("num_ctx", 4096)
     base_cfg["num_predict"] = max(base_cfg.get("num_predict", 0) or 0, 1024)
-    base_cfg["temperature"] = base_cfg.get("temperature") if base_cfg.get("temperature") is not None else 0.1
-    if base_cfg["temperature"] > 0.3:
-        base_cfg["temperature"] = 0.1
+    # Hard-clamp temperature to 0.1 — higher values produce malformed ReAct output
+    base_cfg["temperature"] = 0.1
 
     llm = ChatOllama(**base_cfg)
 
@@ -143,11 +177,14 @@ def build_agents(mode: str = "research") -> dict[str, Agent]:
     for defn in get_active_agents():
         aid = defn["id"]
 
-        skills   = read_skills_file(aid) or {}
-        role     = skills.get("role")      or defn["role"]
-        goal     = skills.get("goal")      or defn["goal"]
-        backstory = skills.get("backstory") or defn["backstory"]
-        max_iter = int(skills.get("max_iter") or defn.get("max_iter") or DEFAULT_MAX_ITER)
+        skills    = read_skills_file(aid) or {}
+        role      = skills.get("role")      or defn["role"]
+        goal      = skills.get("goal")      or defn["goal"]
+        backstory  = skills.get("backstory") or defn["backstory"]
+        max_iter  = int(skills.get("max_iter") or defn.get("max_iter") or DEFAULT_MAX_ITER)
+
+        # Append the ReAct format reminder to every agent's backstory
+        backstory = (backstory or "").rstrip() + REACT_FORMAT_REMINDER
 
         skill_tools = skills.get("tools")
         reg_tools   = defn.get("tools")
@@ -163,16 +200,24 @@ def build_agents(mode: str = "research") -> dict[str, Agent]:
             else:
                 tools.extend(make_tools([name]))
 
-        agents[aid] = Agent(
-            role             = role,
-            goal             = goal,
-            backstory        = backstory,
-            tools            = tools,
-            llm              = llm,
-            verbose          = True,
-            allow_delegation = False,
-            max_iter         = max_iter,
+        agent_kwargs = dict(
+            role                   = role,
+            goal                   = goal,
+            backstory              = backstory,
+            tools                  = tools,
+            llm                    = llm,
+            verbose                = True,
+            allow_delegation       = False,
+            max_iter               = max_iter,
+            max_rpm                = None,       # no artificial rate-limit mid-task
         )
+        # respect_context_window: prevent silent truncation that breaks ReAct format
+        try:
+            agents[aid] = Agent(**agent_kwargs, respect_context_window=True)
+        except TypeError:
+            # older crewai versions don't support respect_context_window
+            agents[aid] = Agent(**agent_kwargs)
+
     return agents
 
 
@@ -215,11 +260,11 @@ def _emit_working(
     thought: str = "",
 ) -> None:
     _broadcast(broadcast_fn, {
-        "type":   "agent_working",
-        "agent":  agent_id,
-        "label":  label,
+        "type":    "agent_working",
+        "agent":   agent_id,
+        "label":   label,
         "thought": thought,
-        "ts":     time.time(),
+        "ts":      time.time(),
     })
 
 
@@ -294,7 +339,7 @@ def _make_step_callback(
                 if any(s in raw_str for s in _LIMIT_SENTINELS):
                     _emit_activity(
                         broadcast_fn, aid, label,
-                        f"\u26a0\ufe0f {label} hit iteration limit \u2014 partial result only",
+                        f"\u26a0\ufe0f {label} hit iteration limit — partial result only",
                         phase=False,
                     )
                     logger.warning("Agent %s hit iteration/time limit", aid)
@@ -371,7 +416,7 @@ def run_crew(
     job_id    = uuid.uuid4().hex[:8]
     generated = datetime.now()
 
-    logger.info("run_crew started \u2014 topic=%r mode=%s model=%s job=%s", topic, mode, model, job_id)
+    logger.info("run_crew started — topic=%r mode=%s model=%s job=%s", topic, mode, model, job_id)
 
     agents_map = build_agents(mode=mode)
     if not agents_map:
@@ -433,7 +478,7 @@ def run_crew(
         verbose       = True,
     )
 
-    logger.info("Kicking off crew \u2014 %d agents / %d tasks", len(agent_list), len(tasks))
+    logger.info("Kicking off crew — %d agents / %d tasks", len(agent_list), len(tasks))
 
     try:
         result_obj = crew.kickoff()
@@ -462,16 +507,16 @@ def run_crew(
 
     result_text = str(result_obj) if result_obj else "No output produced."
 
-    # ---- Build the report filename: report_YYYYMMDD_HHMMSS_<slug>.txt -------
+    # ---- Build report filename: report_YYYYMMDD_HHMMSS_<slug>.txt ----------
     base_cfg      = get_llm_config()
     temperature   = base_cfg.get("temperature", 0.1)
     num_ctx       = base_cfg.get("num_ctx", 4096)
     active_labels = [_label(aid) for aid in ordered_ids if agents_map.get(aid) in agents_with_tasks]
 
-    slug             = _topic_slug(topic)
-    ts_str           = generated.strftime("%Y%m%d_%H%M%S")
-    report_filename  = f"report_{ts_str}_{slug}.txt"
-    report_path      = report_dir / report_filename
+    slug            = _topic_slug(topic)
+    ts_str          = generated.strftime("%Y%m%d_%H%M%S")
+    report_filename = f"report_{ts_str}_{slug}.txt"
+    report_path     = report_dir / report_filename
 
     full_report = _build_report_text(
         topic         = topic,
