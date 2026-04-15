@@ -4,13 +4,16 @@ agents_crew.py — Dynamic agent builder + job runner
 Fix history:
   ... (see git log for full history)
  18. [FIX] DEFAULT_MAX_ITER raised 8 → 15; num_predict raised 512 → 1024;
-     temperature lowered 0.2 → 0.1 to stop 'iteration limit' sentinel from
-     appearing as task output. _make_task_callback now intercepts sentinel
-     strings and emits a warning instead of broadcasting garbage results.
+     temperature lowered 0.2 → 0.1.
+ 19. [FIX] Report filename: report_YYYYMMDD_HHMMSS_<slug>.txt
+     Report content: canonical header + LLM body + metadata footer,
+     matching the reference format in the attached sample report.
 """
 import logging
+import re
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Any
 
@@ -49,11 +52,8 @@ FS_TOOL_MAP = {
 
 PHASE_ORDER = ["coordinator", "researcher", "analyst", "writer"]
 
-# FIX #18 — raised from 8 → 15 so agents on small models (phi3:mini, mistral)
-# have enough headroom to reach a Final Answer without hitting the limit.
 DEFAULT_MAX_ITER = 15
 
-# Sentinel substrings emitted by CrewAI when an agent exhausts its budget
 _LIMIT_SENTINELS = (
     "iteration limit",
     "time limit",
@@ -66,19 +66,76 @@ _LIMIT_SENTINELS = (
 
 
 # ---------------------------------------------------------------------------
+# Report helpers
+# ---------------------------------------------------------------------------
+
+def _topic_slug(topic: str, max_len: int = 60) -> str:
+    """Convert topic to a safe filename slug, e.g. 'Impact_of_AI_on_software_development'."""
+    slug = re.sub(r"[^\w\s-]", "", topic.strip())
+    slug = re.sub(r"[\s]+", "_", slug)
+    slug = re.sub(r"[_]{2,}", "_", slug)
+    return slug[:max_len].strip("_")
+
+
+def _build_report_text(
+    topic: str,
+    job_id: str,
+    generated: datetime,
+    model: str,
+    active_labels: list[str],
+    body: str,
+    temperature: float,
+    num_ctx: int,
+) -> str:
+    """Wrap LLM body in the canonical report header + metadata footer."""
+    sep = "=" * 60
+    timestamp = generated.strftime("%Y-%m-%d %H:%M:%S")
+    agents_str = ", ".join(active_labels) if active_labels else "N/A"
+
+    # Strip a leading "FORMAT: xxx" line emitted by the writer task
+    body_lines = body.strip().splitlines()
+    if body_lines and body_lines[0].strip().upper().startswith("FORMAT:"):
+        body_lines = body_lines[1:]
+    clean_body = "\n".join(body_lines).strip()
+
+    header = (
+        f"RESEARCH REPORT\n"
+        f"{sep}\n"
+        f"Topic:     {topic}\n"
+        f"Job ID:    {job_id}\n"
+        f"Generated: {timestamp}\n"
+        f"{sep}\n"
+    )
+
+    metadata = (
+        f"\n\n--- Report Metadata ---\n"
+        f"Topic:              {topic}\n"
+        f"Job ID:             {job_id}\n"
+        f"Generated:          {timestamp}\n"
+        f"Model:              {model}\n"
+        f"Temperature:        {temperature}\n"
+        f"Top-K:              default\n"
+        f"Top-P:              default\n"
+        f"Context Window:     {num_ctx}\n"
+        f"Repeat Penalty:     default\n"
+        f"Confidence Score:   N/A\n"
+        f"Active Agents:      {agents_str}\n"
+    )
+
+    return header + "\n" + clean_body + metadata
+
+
+# ---------------------------------------------------------------------------
 # Agent construction
 # ---------------------------------------------------------------------------
 
 def build_agents(mode: str = "research") -> dict[str, Agent]:
     base_cfg = get_llm_config()
-    # FIX #18 — increase num_predict so the LLM can complete multi-step
-    # reasoning in a single generation instead of truncating and looping.
-    # Lower temperature for more deterministic Final Answer outputs.
     base_cfg["num_ctx"]     = base_cfg.get("num_ctx", 4096)
     base_cfg["num_predict"] = max(base_cfg.get("num_predict", 0) or 0, 1024)
     base_cfg["temperature"] = base_cfg.get("temperature") if base_cfg.get("temperature") is not None else 0.1
     if base_cfg["temperature"] > 0.3:
-        base_cfg["temperature"] = 0.1  # clamp high values that cause looping
+        base_cfg["temperature"] = 0.1
 
     llm = ChatOllama(**base_cfg)
 
@@ -86,17 +143,16 @@ def build_agents(mode: str = "research") -> dict[str, Agent]:
     for defn in get_active_agents():
         aid = defn["id"]
 
-        skills    = read_skills_file(aid) or {}
-        role      = skills.get("role")      or defn["role"]
-        goal      = skills.get("goal")      or defn["goal"]
-        backstory  = skills.get("backstory") or defn["backstory"]
-        max_iter  = int(skills.get("max_iter") or defn.get("max_iter") or DEFAULT_MAX_ITER)
+        skills   = read_skills_file(aid) or {}
+        role     = skills.get("role")      or defn["role"]
+        goal     = skills.get("goal")      or defn["goal"]
+        backstory = skills.get("backstory") or defn["backstory"]
+        max_iter = int(skills.get("max_iter") or defn.get("max_iter") or DEFAULT_MAX_ITER)
 
         skill_tools = skills.get("tools")
         reg_tools   = defn.get("tools")
         tool_names  = list(skill_tools or reg_tools or ROLE_TOOLS.get(aid, DEFAULT_TOOLS))
 
-        # Always guarantee summariser is present
         if "summariser" not in tool_names:
             tool_names.append("summariser")
 
@@ -125,7 +181,6 @@ def build_agents(mode: str = "research") -> dict[str, Agent]:
 # ---------------------------------------------------------------------------
 
 def _broadcast(broadcast_fn: Optional[Callable], msg: dict) -> None:
-    """Fire-and-forget — never block the worker thread."""
     if broadcast_fn is None:
         return
     try:
@@ -169,7 +224,6 @@ def _emit_working(
 
 
 def _is_sentinel(text: str) -> bool:
-    """Return True if text is a CrewAI iteration/time-limit sentinel string."""
     low = text.lower()
     return any(s in low for s in _LIMIT_SENTINELS)
 
@@ -240,7 +294,7 @@ def _make_step_callback(
                 if any(s in raw_str for s in _LIMIT_SENTINELS):
                     _emit_activity(
                         broadcast_fn, aid, label,
-                        f"\u26a0\ufe0f {label} hit iteration limit — partial result only",
+                        f"\u26a0\ufe0f {label} hit iteration limit \u2014 partial result only",
                         phase=False,
                     )
                     logger.warning("Agent %s hit iteration/time limit", aid)
@@ -269,21 +323,15 @@ def _make_task_callback(
             else:
                 text = str(task_output).strip()
 
-            # FIX #18 — if the task output IS a sentinel string (e.g.
-            # "Agent stopped due to iteration limit or time limit."),
-            # do NOT broadcast it as a valid result. Emit a warning
-            # instead so the feed shows the real cause clearly.
             if _is_sentinel(text):
-                logger.warning(
-                    "Agent %s task output was a limit sentinel: %s", agent_id, text
-                )
+                logger.warning("Agent %s task output was a limit sentinel: %s", agent_id, text)
                 _emit_activity(
                     broadcast_fn, agent_id, label,
                     f"\u26a0\ufe0f {label} hit iteration/time limit before finishing. "
                     f"Consider using a larger model or reducing task complexity.",
                     phase=False, task_result=False,
                 )
-                return  # do NOT emit as task_result
+                return
 
             if len(text) > 400:
                 text = text[:397] + "\u2026"
@@ -320,7 +368,10 @@ def run_crew(
     report_dir = report_dir or Path("reports")
     report_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("run_crew started — topic=%r mode=%s model=%s", topic, mode, model)
+    job_id    = uuid.uuid4().hex[:8]
+    generated = datetime.now()
+
+    logger.info("run_crew started \u2014 topic=%r mode=%s model=%s job=%s", topic, mode, model, job_id)
 
     agents_map = build_agents(mode=mode)
     if not agents_map:
@@ -382,7 +433,7 @@ def run_crew(
         verbose       = True,
     )
 
-    logger.info("Kicking off crew — %d agents / %d tasks", len(agent_list), len(tasks))
+    logger.info("Kicking off crew \u2014 %d agents / %d tasks", len(agent_list), len(tasks))
 
     try:
         result_obj = crew.kickoff()
@@ -411,9 +462,29 @@ def run_crew(
 
     result_text = str(result_obj) if result_obj else "No output produced."
 
-    report_filename = f"report_{uuid.uuid4().hex[:8]}.md"
-    report_path     = report_dir / report_filename
-    report_path.write_text(result_text, encoding="utf-8")
+    # ---- Build the report filename: report_YYYYMMDD_HHMMSS_<slug>.txt -------
+    base_cfg      = get_llm_config()
+    temperature   = base_cfg.get("temperature", 0.1)
+    num_ctx       = base_cfg.get("num_ctx", 4096)
+    active_labels = [_label(aid) for aid in ordered_ids if agents_map.get(aid) in agents_with_tasks]
+
+    slug             = _topic_slug(topic)
+    ts_str           = generated.strftime("%Y%m%d_%H%M%S")
+    report_filename  = f"report_{ts_str}_{slug}.txt"
+    report_path      = report_dir / report_filename
+
+    full_report = _build_report_text(
+        topic         = topic,
+        job_id        = job_id,
+        generated     = generated,
+        model         = model,
+        active_labels = active_labels,
+        body          = result_text,
+        temperature   = temperature,
+        num_ctx       = num_ctx,
+    )
+
+    report_path.write_text(full_report, encoding="utf-8")
     logger.info("Report saved: %s", report_path)
 
     for aid in ordered_ids:
@@ -425,4 +496,4 @@ def run_crew(
                 phase=False, task_result=True,
             )
 
-    return result_text, report_filename, "md", 0, 0
+    return full_report, report_filename, "txt", 0, 0

@@ -1,18 +1,10 @@
 """
 tasks_crew.py — Dynamic task pipeline builder
-Supports three modes:
-  research  — full 4-agent pipeline (default)
-  query     — single-agent quick answer (simple Q&A / maths)
-  file      — file-aware pipeline with read_uploaded_file context
-
-Fix history:
-  [FIX] Issue #4 — When fewer than 4 agents are active the original code
-        assigned the same Agent object to multiple tasks.  CrewAI 0.51
-        sequential mode hangs when the same agent appears in consecutive
-        tasks while it is still marked as 'active'.
-        New approach: collect distinct agents in phase order, then build
-        only as many tasks as there are distinct agents, merging later
-        phase goals into earlier tasks when needed.
+Supports modes:
+  research      — full 4-agent pipeline (default)
+  query         — single-agent quick answer (simple Q&A / maths)
+  file          — file-aware pipeline with read_uploaded_file context
+  architectural — auto-detected; deep design / architecture reports
 """
 from crewai import Task
 from typing import Optional
@@ -20,7 +12,7 @@ from datetime import datetime
 import re
 
 
-# ── Real-time query detection ────────────────────────────────────────────────────
+# ── Real-time query detection ───────────────────────────────────────────────────────
 _REALTIME_PATTERNS = re.compile(
     r"\b(today|current date|what day|what date|date today|day today|"
     r"what time|current time|right now|this moment|"
@@ -36,14 +28,31 @@ _REALTIME_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# ── Architectural / design topic detection ────────────────────────────────────
+_ARCH_PATTERNS = re.compile(
+    r"\b(architect(ure|ural)?|system design|high.level design|low.level design|"
+    r"hld|lld|class diagram|sequence diagram|er diagram|data flow|"
+    r"microservice|monolith|serverless|event.driven|cqrs|event sourcing|"
+    r"component diagram|deployment diagram|api design|api contract|"
+    r"database schema|schema design|data model|domain model|"
+    r"design pattern|patterns?|uml|dfd|flowchart|"
+    r"infrastructure|cloud architecture|aws|azure|gcp design|"
+    r"scalab|resilien|fault.toleran|load.balanc|cach(e|ing)?
+    r"|service mesh|kubernetes|docker compose|ci.?cd pipeline)\b",
+    re.IGNORECASE,
+)
+
 
 def _needs_realtime(topic: str) -> bool:
-    """Return True if the topic likely needs live data from web_search."""
     return bool(_REALTIME_PATTERNS.search(topic))
 
 
+def _is_architectural(topic: str) -> bool:
+    """Return True if the topic asks for architecture/design output."""
+    return bool(_ARCH_PATTERNS.search(topic))
+
+
 def _now_context() -> str:
-    """Return a formatted current date/time string for injection into prompts."""
     now = datetime.now()
     return (
         f"[SYSTEM INFO — Current date/time: "
@@ -55,23 +64,13 @@ def _now_context() -> str:
 
 
 def _distinct_agents(agents: dict, phase_order: list) -> list:
-    """
-    Return a list of (phase_name, Agent) pairs in phase order,
-    deduplicating so the same Agent object never appears twice.
-    Extra agents (not in phase_order) are appended at the end.
-
-    This prevents CrewAI 0.51 sequential-mode deadlocks that occur when
-    the same Agent is assigned to consecutive tasks.
-    """
     seen: set = set()
     result = []
-    # Core phases first
     for name in phase_order:
         agent = agents.get(name)
         if agent is not None and id(agent) not in seen:
             seen.add(id(agent))
             result.append((name, agent))
-    # Extra / custom agents
     for name, agent in agents.items():
         if name not in phase_order and id(agent) not in seen:
             seen.add(id(agent))
@@ -80,6 +79,110 @@ def _distinct_agents(agents: dict, phase_order: list) -> list:
 
 
 CORE_PHASES = ["coordinator", "researcher", "analyst", "writer"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Writer task descriptions — injected into both 3-agent and 4-agent paths
+# ─────────────────────────────────────────────────────────────────────────────
+
+_NORMAL_WRITER_DESC = """
+Write a structured research report on '{topic}' using the analysis above.
+
+You MUST follow this EXACT structure (use these section headers verbatim):
+
+## Introduction
+<2-3 paragraphs giving context and background on the topic>
+
+## Key Findings
+<bullet list of at least 5 factual findings, each starting with '-'>
+
+## Analysis
+<2-3 paragraphs interpreting the findings, identifying patterns and implications>
+
+## Conclusion
+<1-2 paragraphs summarising outcomes and recommendations>
+
+Rules:
+- Do NOT include any FORMAT: line. The report wrapper is handled externally.
+- Use plain prose. No markdown decorations outside section headers.
+- Do not use placeholder text like [insert here] or (TBD).
+- Every claim must come from the researcher/analyst findings above.
+"""
+
+_ARCH_WRITER_DESC = """
+Write an ARCHITECTURAL DESIGN DOCUMENT on '{topic}' using the research above.
+
+You MUST follow this EXACT structure:
+
+## Overview
+<1-2 paragraphs describing the system's purpose, scope, and goals>
+
+## Component Architecture
+<Describe the main components/services/modules and their responsibilities>
+
+ASCII Component Diagram:
+```
+[ Component A ] ---> [ Component B ]
+        |                    |
+        v                    v
+[ Component C ] <--- [ Component D ]
+```
+<Brief explanation of each component>
+
+## Data Flow
+<Step-by-step numbered list describing how data moves through the system>
+
+1. ...
+2. ...
+3. ...
+
+## Technology Stack
+| Layer         | Technology    | Justification        |
+|---------------|---------------|----------------------|
+| Frontend      | ...           | ...                  |
+| Backend       | ...           | ...                  |
+| Database      | ...           | ...                  |
+| Messaging     | ...           | ...                  |
+| Infra/Deploy  | ...           | ...                  |
+
+## API / Interface Contracts
+<Define key API endpoints or interface contracts between components>
+
+## Scalability & Resilience
+<How does the design scale? What fault-tolerance mechanisms are present?>
+
+## Risks & Mitigations
+| Risk                  | Likelihood | Impact | Mitigation              |
+|-----------------------|------------|--------|-------------------------|
+| ...                   | High/Med/Low | H/M/L | ...                   |
+
+Rules:
+- Do NOT include any FORMAT: line.
+- ASCII diagrams MUST be inside triple-backtick code blocks.
+- Tables MUST use proper Markdown pipe syntax.
+- Do not use placeholder text like [insert here] or (TBD).
+- Every decision should be justified based on the research findings.
+"""
+
+
+def _writer_task_desc(topic: str) -> str:
+    """Return the appropriate writer task description based on topic type."""
+    if _is_architectural(topic):
+        return _ARCH_WRITER_DESC.format(topic=topic)
+    return _NORMAL_WRITER_DESC.format(topic=topic)
+
+
+def _writer_expected_output(topic: str) -> str:
+    if _is_architectural(topic):
+        return (
+            "Architectural design document with: Overview, Component Architecture "
+            "(with ASCII diagram), Data Flow, Technology Stack table, API Contracts, "
+            "Scalability & Resilience, Risks & Mitigations table."
+        )
+    return (
+        "Structured research report with sections: Introduction, Key Findings "
+        "(min 5 bullet points), Analysis, Conclusion. Plain prose. No placeholders."
+    )
 
 
 def build_tasks(
@@ -94,9 +197,10 @@ def build_tasks(
     ana    = agents.get("analyst")
     wri    = agents.get("writer")
 
-    # Always inject current date/time so agents never guess
     now_ctx   = _now_context()
     realtime  = _needs_realtime(topic)
+    arch_mode = _is_architectural(topic)
+
     rt_instruction = (
         "\n\n*** MANDATORY: This query requires LIVE real-time data. ***\n"
         "Step 1: Call the web_search tool RIGHT NOW with this exact query: "
@@ -111,7 +215,7 @@ def build_tasks(
         "'Real-time data unavailable — enable web search in Settings.'"
     ) if realtime else ""
 
-    # ── Quick query / maths mode ────────────────────────────────────────────────────
+    # ── Quick query mode ────────────────────────────────────────────────────────────────
     if mode == "query":
         responder = res or wri or coord
         if realtime:
@@ -120,7 +224,7 @@ def build_tasks(
                 f"TASK: Answer this query using LIVE data: '{topic}'\n"
                 f"{rt_instruction}\n\n"
                 "Your response format:\n"
-                "Line 1: The exact value/answer from the tool (e.g. 'Infosys (INFY): \u20b91,842.50 \u25b2+12.30 (+0.67%)')\n"
+                "Line 1: The exact value/answer from the tool\n"
                 "Line 2-3: Key supporting details from the tool output\n"
                 "Line 4: Source and timestamp from the tool\n"
                 "Do NOT add commentary about training data limitations."
@@ -138,7 +242,7 @@ def build_tasks(
             expected = "A direct, complete, accurate answer."
         return [Task(description=description, expected_output=expected, agent=responder)]
 
-    # ── File analysis mode ────────────────────────────────────────────────────────
+    # ── File analysis mode ────────────────────────────────────────────────────────────────
     if mode == "file":
         file_list = ", ".join(uploaded_files) if uploaded_files else "the uploaded file"
         file_task = Task(
@@ -161,40 +265,20 @@ def build_tasks(
             context=[file_task],
         )
         report_task = Task(
-            description=(
-                f"Write a report answering: '{topic}' using the analysis from the previous task. "
-                "IMPORTANT: The very first line of your response MUST be the format declaration.\n"
-                "FORMAT: md      \u2190 narrative reports and summaries\n"
-                "FORMAT: html    \u2190 structured output with tables\n"
-                "FORMAT: csv     \u2190 primarily tabular data\n"
-                "FORMAT: json    \u2190 structured/API-style data\n"
-                "FORMAT: txt     \u2190 plain prose\n\n"
-                "After the FORMAT line, write the full report with Summary, Key Findings, "
-                "and Conclusion."
-            ),
-            expected_output=(
-                "First line must be: FORMAT: <md|html|csv|json|txt>\n"
-                "Remainder: complete report in that format."
-            ),
+            description=_writer_task_desc(topic),
+            expected_output=_writer_expected_output(topic),
             agent=wri or coord,
             context=[analysis_task],
         )
-        # Deduplicate: skip tasks whose agent is same object as prior task
-        raw = [file_task, analysis_task, report_task]
-        return _dedup_tasks(raw)
+        return _dedup_tasks([file_task, analysis_task, report_task])
 
-    # ── Full research pipeline (default) ──────────────────────────────────
-    #
-    # [FIX #4] Use _distinct_agents() to get a deduplicated ordered list
-    # so we never assign the same Agent object to consecutive tasks.
-    #
+    # ── Full research pipeline ────────────────────────────────────────────────────────────
     distinct = _distinct_agents(agents, CORE_PHASES)
 
-    # Map phase slot -> Agent (or None if not enough distinct agents)
     def _slot(index: int):
         return distinct[index][1] if index < len(distinct) else None
 
-    d_coord = _slot(0)  # always present (build_agents raises if 0 agents)
+    d_coord = _slot(0)
     d_res   = _slot(1)
     d_ana   = _slot(2)
     d_wri   = _slot(3)
@@ -206,128 +290,127 @@ def build_tasks(
             "Use read_uploaded_file to access them if relevant."
         )
 
-    # Build all four task descriptions regardless of agent count;
-    # _dedup_tasks() will merge/drop phases sharing the same agent.
-    t1 = Task(
-        description=(
-            f"{now_ctx}\n\n"
-            f"Analyse the research topic: '{topic}'.{file_context}{rt_instruction} "
+    # Coordinator: break topic into research questions
+    coord_desc = (
+        f"{now_ctx}\n\n"
+        f"Analyse the research topic: '{topic}'.{file_context}{rt_instruction} "
+    )
+    if arch_mode:
+        coord_desc += (
+            "This is an ARCHITECTURAL / DESIGN topic. "
+            "Break it into 3 focused design questions covering: "
+            "(1) component decomposition, "
+            "(2) data flow and API contracts, "
+            "(3) technology choices and scalability. "
+            "Output a numbered list with 1-sentence justification each."
+        )
+    else:
+        coord_desc += (
             "Break it into 3 focused research questions. "
             "Output a numbered list of questions with 1-sentence justification each."
-        ),
-        expected_output="3 numbered research questions with justification.",
+        )
+
+    t1 = Task(
+        description=coord_desc,
+        expected_output="3 numbered research/design questions with justification.",
         agent=d_coord,
     )
 
     if d_res is None:
-        # Only 1 distinct agent — coordinator does everything
         t_solo = Task(
             description=(
                 f"{now_ctx}\n\n"
-                f"Research, analyse, and write a full report on: '{topic}'.{file_context}{rt_instruction}\n"
-                "Use web_search to gather facts. Analyse findings. "
-                "Start your final answer with 'FORMAT: txt' on its own line, "
-                "then write the complete report."
+                f"Research, analyse, and write a full {'architectural design document' if arch_mode else 'report'} on: '{topic}'.{file_context}{rt_instruction}\n"
+                + _writer_task_desc(topic)
             ),
-            expected_output="FORMAT: txt\n<full research report>",
+            expected_output=_writer_expected_output(topic),
             agent=d_coord,
         )
         return [t_solo]
 
-    t2 = Task(
-        description=(
+    # Researcher: gather facts
+    if arch_mode:
+        res_desc = (
+            f"{now_ctx}\n\n"
+            f"Research existing architectural patterns and best practices for: '{topic}'.{file_context}\n"
+            "Use web_search to find: component models, technology comparisons, "
+            "real-world implementation examples, and known pitfalls. "
+            "Compile as numbered findings (minimum 5). Be specific — no placeholders."
+        )
+    else:
+        res_desc = (
             f"{now_ctx}\n\n"
             f"Using the research questions, gather key facts and data about: '{topic}'.{file_context}{rt_instruction}\n"
             "Use web_search to find information. "
-            "If the topic involves current/real-time data (date, weather, news, prices), "
-            "call web_search with the specific query to get live results. "
+            "If the topic involves current/real-time data, call web_search to get live results. "
             "Compile findings as bullet points (minimum 5 points). "
             "Never write placeholder text — only include facts you actually retrieved."
-        ),
-        expected_output="Bullet-point list of factual findings (min 5 points). No placeholders.",
+        )
+
+    t2 = Task(
+        description=res_desc,
+        expected_output="Numbered/bulleted list of factual findings (min 5). No placeholders.",
         agent=d_res,
         context=[t1],
     )
 
     if d_ana is None:
-        # 2 distinct agents — researcher writes the report too
         t2_extended = Task(
             description=(
-                f"{now_ctx}\n\n"
-                f"Using the research questions, gather key facts and data about: '{topic}'.{file_context}{rt_instruction}\n"
-                "Use web_search to find information. Compile findings as bullet points (minimum 5 points). "
-                "Then analyse the findings: identify the top 3 insights, any risks or gaps, "
-                "and rate overall confidence (0–100%). "
-                "Start your final answer with 'FORMAT: txt' on its own line, "
-                "then write a complete report."
+                res_desc + "\n\nThen analyse the findings: identify the top 3 insights, "
+                "any risks or gaps, and rate overall confidence (0-100%). "
+                "\n\n" + _writer_task_desc(topic)
             ),
-            expected_output="FORMAT: txt\n<research findings + analysis + report>",
+            expected_output=_writer_expected_output(topic),
             agent=d_res,
             context=[t1],
         )
         return _dedup_tasks([t1, t2_extended])
 
-    t3 = Task(
-        description=(
+    # Analyst: interpret findings
+    if arch_mode:
+        ana_desc = (
+            "Analyse the architectural research findings. "
+            "Identify: (1) the best-fit architectural pattern for this system, "
+            "(2) component boundaries and integration points, "
+            "(3) top 3 technology recommendations with rationale, "
+            "(4) risks and trade-offs. "
+            "Rate overall design confidence (0-100%)."
+        )
+    else:
+        ana_desc = (
             "Analyse the research findings. Identify the top 3 insights, "
-            "any risks or gaps, and rate overall confidence (0–100%)."
-        ),
-        expected_output="Structured analysis: 3 insights, risks/gaps, confidence score.",
+            "any risks or gaps, and rate overall confidence (0-100%)."
+        )
+
+    t3 = Task(
+        description=ana_desc,
+        expected_output="Structured analysis: 3 insights/decisions, risks/gaps, confidence score.",
         agent=d_ana,
         context=[t2],
     )
 
+    writer_desc = _writer_task_desc(topic)
+    writer_expected = _writer_expected_output(topic)
+
     if d_wri is None:
-        # 3 distinct agents — analyst writes the report
         t3_extended = Task(
-            description=(
-                "Analyse the research findings. Identify the top 3 insights, "
-                "any risks or gaps, and rate overall confidence (0–100%). "
-                "Then write a complete report on the topic. "
-                "IMPORTANT: The very first line MUST be the FORMAT declaration.\n"
-                "FORMAT: txt     \u2190 DEFAULT — plain prose, summaries, general research\n"
-                "FORMAT: md      \u2190 if markdown formatting genuinely adds value\n"
-                "After the FORMAT line, write the full report."
-            ),
-            expected_output=(
-                "First line must be: FORMAT: <txt|md>\n"
-                "Remainder: complete report."
-            ),
+            description=ana_desc + "\n\n" + writer_desc,
+            expected_output=writer_expected,
             agent=d_ana,
             context=[t2],
         )
         tasks_core = _dedup_tasks([t1, t2, t3_extended])
     else:
         t4 = Task(
-            description=(
-                f"Write a report on '{topic}' based on the analysis. "
-                "IMPORTANT: The very first line MUST be the FORMAT declaration.\n"
-                "Choose the BEST format based on content type:\n"
-                "FORMAT: txt     \u2190 DEFAULT — plain prose, summaries, general research\n"
-                "FORMAT: csv     \u2190 ONLY if output is a data table, comparison, or ranking\n"
-                "FORMAT: json    \u2190 ONLY if output is structured key/value or API-style data\n"
-                "FORMAT: html    \u2190 ONLY if output has complex tables or rich structure\n"
-                "FORMAT: log     \u2190 ONLY if output is a timeline or event log\n"
-                "FORMAT: md      \u2190 if markdown formatting genuinely adds value\n\n"
-                "After the FORMAT line, write the full report.\n"
-                "For 'txt': clear prose paragraphs — this is the DEFAULT for most topics.\n"
-                "For 'csv': header row, then one row per finding, commas only, no extra text.\n"
-                "For 'json': valid JSON — object with keys: title, summary, findings[].\n"
-                "For 'html': complete valid HTML fragment with h2/p/ul/table elements.\n"
-                "For 'log': timestamped lines newest-last: [HH:MM] Event description.\n"
-                "For 'md': ## headings, bullet lists; include Introduction, Findings, Conclusion."
-            ),
-            expected_output=(
-                "First line must be: FORMAT: <md|html|csv|json|txt>\n"
-                "Remainder: complete report in that format."
-            ),
+            description=writer_desc,
+            expected_output=writer_expected,
             agent=d_wri,
             context=[t3],
         )
         tasks_core = _dedup_tasks([t1, t2, t3, t4])
 
-    # ── Custom / extra agents — each gets a dedicated task ─────────────────────
-    # Exclude the four core phases AND fs_agent.
+    # Extra / custom agents
     CORE_IDS = {"coordinator", "researcher", "analyst", "writer", "fs_agent"}
     extra = [(aid, a) for aid, a in agents.items() if aid not in CORE_IDS]
 
@@ -361,33 +444,20 @@ def build_tasks(
     return tasks_core + extra_tasks
 
 
-# ---------------------------------------------------------------------------
-# Deduplication helper
-# ---------------------------------------------------------------------------
-
+# ─────────────────────────────────────────────────────────────────────────────
 def _dedup_tasks(tasks: list) -> list:
-    """
-    Remove tasks whose agent object is identical to the immediately
-    preceding task's agent.  When that happens, the duplicate task's
-    description is appended to the prior task's description so no
-    instructions are lost.
-
-    This prevents CrewAI 0.51 sequential-mode deadlocks.
-    """
     if not tasks:
         return tasks
     result = [tasks[0]]
     for task in tasks[1:]:
         prev = result[-1]
         if task.agent is not None and task.agent is prev.agent:
-            # Merge: append this task's description and update expected_output
             prev.description = (
                 prev.description.rstrip()
                 + "\n\nADDITIONAL GOAL:\n"
                 + task.description.strip()
             )
-            prev.expected_output = task.expected_output  # use the later stage's output spec
-            # Merge context
+            prev.expected_output = task.expected_output
             if task.context:
                 existing_ctx = list(prev.context or [])
                 for ctx_task in task.context:
