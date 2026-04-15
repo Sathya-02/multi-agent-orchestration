@@ -38,6 +38,12 @@ openpyxl==3.1.5
 python-dateutil==2.9.0
 
 # ── Authentication / OAuth ────────────────────────────────────────────────
-# Required for Google OAuth login and session JWT cookies
+# Required for Google OAuth login, session JWT cookies,
+# AND the new local JWT login + RBAC system (auth.py / routers/auth_router.py)
 PyJWT>=2.8.0
 psycopg2-binary>=2.9.9
+
+# ── Local auth dependencies (added with login + RBAC feature) ─────────────
+# python-jose is an alternative JWT lib — PyJWT (above) is used instead.
+# hashlib, secrets, json are stdlib — no extra install needed.
+# pathlib is stdlib — no extra install needed.
