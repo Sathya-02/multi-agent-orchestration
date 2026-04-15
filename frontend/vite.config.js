@@ -7,13 +7,21 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      // ── WebSocket ──────────────────────────────────────────────────────
+      // ── WebSocket ───────────────────────────────────────────────────────────────────
       '/ws': {
         target: 'ws://localhost:8000',
         ws: true,
         changeOrigin: true,
       },
-      // ── All backend REST routes ────────────────────────────────────────
+      // ── Authentication (local JWT + Google OAuth) ────────────────────────────
+      // Must be listed BEFORE other routes to avoid prefix collisions.
+      // Handles: /auth/login  /auth/me  /auth/logout  /auth/users
+      //          /auth/login/google  /auth/callback/google  /auth/roles
+      '/auth': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
+      // ── All backend REST routes ───────────────────────────────────────────────
       // Catches: /run /stats /models /uploads /upload /reports
       //          /agents /tools /kb /fs-config /telegram /self-improver
       //          /web-search /spawns /tool-spawns /spawn-settings
