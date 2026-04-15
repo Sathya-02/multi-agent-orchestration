@@ -29,15 +29,16 @@ _REALTIME_PATTERNS = re.compile(
 )
 
 # ── Architectural / design topic detection ────────────────────────────────────
+# NOTE: all alternatives must be on ONE logical string — no bare newlines inside r"..."
 _ARCH_PATTERNS = re.compile(
-    r"\b(architect(ure|ural)?|system design|high.level design|low.level design|"
-    r"hld|lld|class diagram|sequence diagram|er diagram|data flow|"
-    r"microservice|monolith|serverless|event.driven|cqrs|event sourcing|"
-    r"component diagram|deployment diagram|api design|api contract|"
-    r"database schema|schema design|data model|domain model|"
-    r"design pattern|patterns?|uml|dfd|flowchart|"
-    r"infrastructure|cloud architecture|aws|azure|gcp design|"
-    r"scalab|resilien|fault.toleran|load.balanc|cach(e|ing)?
+    r"\b(architect(ure|ural)?|system design|high.level design|low.level design"
+    r"|hld|lld|class diagram|sequence diagram|er diagram|data flow"
+    r"|microservice|monolith|serverless|event.driven|cqrs|event sourcing"
+    r"|component diagram|deployment diagram|api design|api contract"
+    r"|database schema|schema design|data model|domain model"
+    r"|design pattern|patterns?|uml|dfd|flowchart"
+    r"|infrastructure|cloud architecture|aws|azure|gcp design"
+    r"|scalab|resilien|fault.toleran|load.balanc|cach(e|ing)?"
     r"|service mesh|kubernetes|docker compose|ci.?cd pipeline)\b",
     re.IGNORECASE,
 )
@@ -272,7 +273,7 @@ def build_tasks(
         )
         return _dedup_tasks([file_task, analysis_task, report_task])
 
-    # ── Full research pipeline ────────────────────────────────────────────────────────────
+    # ── Full research pipeline ───────────────────────────────────────────────────────────
     distinct = _distinct_agents(agents, CORE_PHASES)
 
     def _slot(index: int):
@@ -290,7 +291,7 @@ def build_tasks(
             "Use read_uploaded_file to access them if relevant."
         )
 
-    # Coordinator: break topic into research questions
+    # Coordinator task
     coord_desc = (
         f"{now_ctx}\n\n"
         f"Analyse the research topic: '{topic}'.{file_context}{rt_instruction} "
@@ -320,7 +321,9 @@ def build_tasks(
         t_solo = Task(
             description=(
                 f"{now_ctx}\n\n"
-                f"Research, analyse, and write a full {'architectural design document' if arch_mode else 'report'} on: '{topic}'.{file_context}{rt_instruction}\n"
+                f"Research, analyse, and write a full "
+                f"{'architectural design document' if arch_mode else 'report'} on: "
+                f"'{topic}'.{file_context}{rt_instruction}\n"
                 + _writer_task_desc(topic)
             ),
             expected_output=_writer_expected_output(topic),
@@ -328,7 +331,7 @@ def build_tasks(
         )
         return [t_solo]
 
-    # Researcher: gather facts
+    # Researcher task
     if arch_mode:
         res_desc = (
             f"{now_ctx}\n\n"
@@ -357,7 +360,8 @@ def build_tasks(
     if d_ana is None:
         t2_extended = Task(
             description=(
-                res_desc + "\n\nThen analyse the findings: identify the top 3 insights, "
+                res_desc
+                + "\n\nThen analyse the findings: identify the top 3 insights, "
                 "any risks or gaps, and rate overall confidence (0-100%). "
                 "\n\n" + _writer_task_desc(topic)
             ),
@@ -367,7 +371,7 @@ def build_tasks(
         )
         return _dedup_tasks([t1, t2_extended])
 
-    # Analyst: interpret findings
+    # Analyst task
     if arch_mode:
         ana_desc = (
             "Analyse the architectural research findings. "
@@ -390,7 +394,7 @@ def build_tasks(
         context=[t2],
     )
 
-    writer_desc = _writer_task_desc(topic)
+    writer_desc     = _writer_task_desc(topic)
     writer_expected = _writer_expected_output(topic)
 
     if d_wri is None:
@@ -430,8 +434,8 @@ def build_tasks(
             f"Be specific — reference actual content from the report."
         )
         t_extra = Task(
-            description      = task_desc,
-            expected_output  = (
+            description     = task_desc,
+            expected_output = (
                 f"A focused specialist contribution from {ea.role}: "
                 "specific insights, critiques, or enhancements referencing the report content."
             ),
