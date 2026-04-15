@@ -547,7 +547,7 @@ body{
   flex: 1;
   overflow-y: auto;
   min-height: 0;
-  display: flex;
+  display: block;
   flex-direction: column;
   scrollbar-width: thin;
 }
@@ -586,7 +586,6 @@ body{
   display: flex;
   margin-bottom: 4px;
   border-radius: 5px;
-  overflow: hidden;
   background: rgba(58,127,255,0.03);
   animation: slideIn 0.22s ease;
   border: 1px solid rgba(58,127,255,0.06);
