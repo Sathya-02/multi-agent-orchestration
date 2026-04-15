@@ -1,188 +1,196 @@
 """
-auth_router.py — FastAPI Authentication & User Management Router
-=================================================================
-Mount in main.py:
-    from routers.auth_router import router as auth_router
-    app.include_router(auth_router)
+auth_router.py — Authentication + User Management API
 
 Endpoints:
-    POST /auth/login              — Get JWT token (form-urlencoded OR JSON body)
-    GET  /auth/me                 — Current user info (any logged-in user)
-    GET  /auth/users              — List all users (admin only)
-    POST /auth/users              — Create user (admin only)
-    PATCH /auth/users/{username}  — Update role/display_name (admin, or own account)
-    POST  /auth/users/{username}/password — Change password (own account or admin)
-    DELETE /auth/users/{username} — Delete user (admin only)
+  POST   /auth/login              — form-encoded login → JWT
+  POST   /auth/login-json         — JSON login alias
+  GET    /auth/me                 — current user info
+  GET    /auth/users              — list users (admin)
+  POST   /auth/users              — create user (admin)
+  GET    /auth/users/{username}   — get user (admin)
+  PATCH  /auth/users/{username}   — update role/active/extra_permissions (admin) or display_name (self)
+  DELETE /auth/users/{username}   — delete user (admin, not self)
+  POST   /auth/users/{username}/password — reset password
 """
-
-from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
+from typing import Optional, List
 from pydantic import BaseModel
-
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from auth import (
-    LoginResponse,
-    UserRecord,
-    UserToken,
-    CreateUserRequest,
-    UpdateUserRequest,
-    login,
-    get_current_user,
-    require_role,
-    list_users,
-    create_user,
-    update_user,
-    delete_user,
-    ROLE_HIERARCHY,
+    authenticate_user, create_token, get_current_user,
+    require_role, list_users, get_user, create_user,
+    update_user, delete_user, UserToken,
 )
 
-router = APIRouter(prefix="/auth", tags=["Authentication"])
+router = APIRouter(prefix="/auth", tags=["auth"])
 
 
-# ── Login accepts BOTH form-urlencoded AND JSON body ──────────────────────────
-# FastAPI's OAuth2PasswordRequestForm only handles form data.
-# We add a JSON fallback so curl / Postman / frontend JSON calls also work.
+# ── Login ────────────────────────────────────────────────────────────────────
 
 class LoginJSON(BaseModel):
     username: str
     password: str
 
+@router.post("/login")
+async def login_form(form: OAuth2PasswordRequestForm = Depends()):
+    user = authenticate_user(form.username, form.password)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Incorrect username or password")
+    token = create_token({"sub": user["username"], "role": user["role"]})
+    return {"access_token": token, "token_type": "bearer", "user": _safe(user)}
 
-@router.post("/login", response_model=LoginResponse, summary="Login & get JWT token")
-async def login_endpoint(form_data: OAuth2PasswordRequestForm = Depends()):
-    """
-    Accepts EITHER:
-      - Content-Type: application/x-www-form-urlencoded  (username=&password=)
-      - Content-Type: application/json                   ({"username": "", "password": ""})
+@router.post("/login-json")
+async def login_json(body: LoginJSON):
+    user = authenticate_user(body.username, body.password)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
+                            detail="Incorrect username or password")
+    token = create_token({"sub": user["username"], "role": user["role"]})
+    return {"access_token": token, "token_type": "bearer", "user": _safe(user)}
 
-    Returns a Bearer JWT token valid for 8 hours.
-    """
-    return login(form_data.username, form_data.password)
-
-
-# ── /auth/login-json — pure JSON alias (for clients that can't send form data) ─
-@router.post("/login-json", response_model=LoginResponse, include_in_schema=True,
-             summary="Login with JSON body (alias for /login)")
-async def login_json_endpoint(body: LoginJSON):
-    """JSON-body login alias — identical result to POST /auth/login."""
-    return login(body.username, body.password)
-
-
-@router.get("/me", response_model=UserToken, summary="Get current user info")
-async def get_me(current_user: UserToken = Depends(get_current_user)):
-    """Returns the authenticated user's username, role, and display name."""
-    return current_user
+@router.get("/me")
+async def me(current: UserToken = Depends(get_current_user)):
+    user = get_user(current.username)
+    return _safe(user) if user else current
 
 
-@router.get("/roles", summary="List available roles")
-async def get_roles(_: UserToken = Depends(get_current_user)):
-    return {
-        "roles": ROLE_HIERARCHY,
-        "permissions": {
-            "viewer": ["view agents", "view tasks", "view logs", "view knowledge base"],
-            "operator": ["viewer permissions", "run tasks", "upload documents",
-                         "use RAG search", "manage own sessions"],
-            "admin": ["all permissions", "manage users", "manage agents",
-                      "change settings", "trigger self-improvement", "system admin"],
-        },
-    }
+# ── User CRUD ────────────────────────────────────────────────────────────────
+
+class CreateUserBody(BaseModel):
+    username: str
+    password: str
+    display_name: Optional[str] = None
+    role: Optional[str] = "viewer"
+    extra_permissions: Optional[List[str]] = []
+
+class UpdateUserBody(BaseModel):
+    display_name: Optional[str] = None
+    role: Optional[str] = None
+    active: Optional[bool] = None
+    extra_permissions: Optional[List[str]] = None
+
+class PasswordBody(BaseModel):
+    new_password: str
+    current_password: Optional[str] = None
+    admin_override: Optional[bool] = False
 
 
-# ─── Admin: User Management ────────────────────────────────────────────────────
+@router.get("/users")
+async def list_all_users(current: UserToken = Depends(require_role("admin"))):
+    return [_safe(u) for u in list_users()]
 
-@router.get("/users", response_model=list[UserRecord], summary="List all users (admin)")
-async def get_users(_: UserToken = Depends(require_role("admin"))):
-    return list_users()
-
-
-@router.post("/users", response_model=UserRecord, summary="Create a new user (admin)")
-async def post_create_user(
-    req: CreateUserRequest,
-    _: UserToken = Depends(require_role("admin")),
+@router.post("/users", status_code=201)
+async def create_new_user(
+    body: CreateUserBody,
+    current: UserToken = Depends(require_role("admin"))
 ):
-    return create_user(req)
+    existing = get_user(body.username)
+    if existing:
+        raise HTTPException(400, f"User '{body.username}' already exists")
+    user = create_user(
+        username=body.username,
+        password=body.password,
+        display_name=body.display_name or body.username,
+        role=body.role or "viewer",
+        extra_permissions=body.extra_permissions or [],
+    )
+    return _safe(user)
 
+@router.get("/users/{username}")
+async def get_one_user(
+    username: str,
+    current: UserToken = Depends(require_role("admin"))
+):
+    user = get_user(username)
+    if not user:
+        raise HTTPException(404, f"User '{username}' not found")
+    return _safe(user)
 
-@router.patch("/users/{username}", response_model=UserRecord,
-              summary="Update display_name or role (admin, or own account for display_name)")
+@router.patch("/users/{username}")
 async def patch_user(
     username: str,
-    req: UpdateUserRequest,
-    current_user: UserToken = Depends(get_current_user),
+    body: UpdateUserBody,
+    current: UserToken = Depends(get_current_user)
 ):
-    """
-    - Any user can update their OWN display_name.
-    - Only admins can change roles or update OTHER users.
-    """
-    is_own  = current_user.username == username
-    is_admin = current_user.role == "admin"
+    user = get_user(username)
+    if not user:
+        raise HTTPException(404, f"User '{username}' not found")
 
-    if not is_admin and not is_own:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                            detail="You can only update your own profile.")
+    is_admin  = current.role == "admin"
+    is_self   = current.username == username
 
-    # Non-admins may not change role or active status
-    if not is_admin:
-        if req.role is not None:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                detail="Only admins can change roles.")
-        if req.active is not None:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                detail="Only admins can change active status.")
+    if not is_admin and not is_self:
+        raise HTTPException(403, "Forbidden")
 
-    return update_user(username, req)
+    updates = {}
+    if body.display_name is not None:
+        updates["display_name"] = body.display_name
+    if is_admin:
+        if body.role is not None:
+            if body.role not in ("viewer", "operator", "admin"):
+                raise HTTPException(400, "Invalid role")
+            # Prevent admin from demoting themselves
+            if is_self and body.role != "admin":
+                raise HTTPException(400, "Cannot change own role")
+            updates["role"] = body.role
+        if body.active is not None:
+            if is_self:
+                raise HTTPException(400, "Cannot deactivate yourself")
+            updates["active"] = body.active
+        if body.extra_permissions is not None:
+            updates["extra_permissions"] = body.extra_permissions
+    elif body.role is not None or body.active is not None or body.extra_permissions is not None:
+        raise HTTPException(403, "Only admins can change role, active status, or extra permissions")
 
+    updated = update_user(username, **updates)
+    return _safe(updated)
 
-# ── Self-service password change ───────────────────────────────────────────────
-class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str
-
-
-@router.post("/users/{username}/password", summary="Change own password")
-async def change_password(
+@router.delete("/users/{username}", status_code=204)
+async def del_user(
     username: str,
-    req: ChangePasswordRequest,
-    current_user: UserToken = Depends(get_current_user),
+    current: UserToken = Depends(require_role("admin"))
 ):
-    """
-    Lets any user change their OWN password by supplying the current one.
-    Admins can change any user's password without supplying current_password.
-    """
-    from auth import verify_password, hash_password, _load_users, _save_users
-
-    is_own   = current_user.username == username
-    is_admin = current_user.role == "admin"
-
-    if not is_own and not is_admin:
-        raise HTTPException(status_code=403, detail="Cannot change another user's password.")
-
-    users = _load_users()
-    target = users.get(username)
-    if not target:
-        raise HTTPException(status_code=404, detail="User not found.")
-
-    # Verify current password (skip for admins changing someone else's password)
-    if is_own:
-        if not verify_password(req.current_password, target["password_hash"], target.get("salt", "")):
-            raise HTTPException(status_code=400, detail="Current password is incorrect.")
-
-    if len(req.new_password) < 6:
-        raise HTTPException(status_code=400, detail="New password must be at least 6 characters.")
-
-    import secrets
-    salt = secrets.token_hex(16)
-    users[username]["password_hash"] = hash_password(req.new_password, salt)
-    users[username]["salt"] = salt
-    _save_users(users)
-
-    return {"message": "Password updated successfully."}
-
-
-@router.delete("/users/{username}", summary="Delete user (admin)")
-async def delete_user_endpoint(
-    username: str,
-    _: UserToken = Depends(require_role("admin")),
-):
+    if current.username == username:
+        raise HTTPException(400, "Cannot delete yourself")
+    if not get_user(username):
+        raise HTTPException(404, f"User '{username}' not found")
     delete_user(username)
-    return {"message": f"User '{username}' deleted successfully"}
+
+@router.post("/users/{username}/password")
+async def reset_password(
+    username: str,
+    body: PasswordBody,
+    current: UserToken = Depends(get_current_user)
+):
+    from auth import hash_password, verify_password
+    user = get_user(username)
+    if not user:
+        raise HTTPException(404, f"User '{username}' not found")
+
+    is_admin = current.role == "admin"
+    is_self  = current.username == username
+
+    if not is_admin and not is_self:
+        raise HTTPException(403, "Forbidden")
+    if is_self and not is_admin and not body.current_password:
+        raise HTTPException(400, "current_password required for self-service password change")
+    if is_self and not is_admin:
+        if not verify_password(body.current_password, user["password_hash"]):
+            raise HTTPException(400, "Current password is incorrect")
+
+    update_user(username, password_hash=hash_password(body.new_password))
+    return {"ok": True}
+
+
+# ── Helper ────────────────────────────────────────────────────────────────────
+def _safe(u: dict) -> dict:
+    """Strip password_hash before returning user data to client."""
+    if not u:
+        return {}
+    return {
+        k: v for k, v in u.items()
+        if k not in ("password_hash", "salt")
+    }
