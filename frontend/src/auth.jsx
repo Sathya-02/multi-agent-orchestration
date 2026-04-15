@@ -10,8 +10,8 @@
  *   - sessionStorage by default (survives reload, cleared on tab close)
  *   - localStorage if the user checks "Remember me" (survives browser restart)
  *
- * On mount, _hydrateToken() reads any persisted token back into memory so
- * that authHeaders() always returns a valid Bearer token after a page reload.
+ * FIX: POST /auth/login now sends application/x-www-form-urlencoded
+ *      (FastAPI OAuth2PasswordRequestForm requires form data, not JSON).
  */
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import LoginPage from './components/LoginPage.jsx'
@@ -26,7 +26,6 @@ let _memToken = null
 
 function _hydrateToken() {
   if (_memToken) return _memToken
-  // prefer localStorage ("remember me") → fall back to sessionStorage
   _memToken = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || null
   return _memToken
 }
@@ -70,13 +69,12 @@ export function getUserInitials(name) {
   return name.split(/[\s._-]+/).map(p => p[0]).join('').slice(0, 2).toUpperCase()
 }
 
-// ── AuthProvider ───────────────────────────────────────────────────────────
+// ── AuthProvider ────────────────────────────────────────────────────────────
 export function AuthProvider({ children }) {
   const [user,      setUser]      = useState(null)
-  const [loading,   setLoading]   = useState(true)   // true until first /auth/me resolves
+  const [loading,   setLoading]   = useState(true)
   const [authError, setAuthError] = useState(null)
 
-  // Fetch current user from /auth/me (called on mount + after login)
   const refreshUser = useCallback(async () => {
     _hydrateToken()
     if (!_memToken) { setUser(null); return null }
@@ -87,12 +85,10 @@ export function AuthProvider({ children }) {
       if (d.username) { setUser(d); return d }
       _clearToken(); setUser(null); return null
     } catch {
-      // network down — keep existing user if already authenticated
       return user
     }
   }, [user])
 
-  // On mount: hydrate token → validate with /auth/me → set user
   useEffect(() => {
     (async () => {
       setLoading(true)
@@ -101,27 +97,35 @@ export function AuthProvider({ children }) {
     })()
   }, [])   // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── loginLocal ────────────────────────────────────────────
+  // ── loginLocal ────────────────────────────────────────────────────────
+  // FIXED: send as application/x-www-form-urlencoded so FastAPI's
+  // OAuth2PasswordRequestForm can parse it (JSON body → 422 Unprocessable Entity)
   const loginLocal = async (username, password, remember = false) => {
     setAuthError(null)
+
+    const body = new URLSearchParams()
+    body.append('username', username)
+    body.append('password', password)
+
     const r = await fetch(`${AUTH_BASE}/login`, {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ username, password }),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
     })
     const d = await r.json()
     if (!r.ok) throw new Error(d.detail || d.error || 'Login failed')
+
     _storeToken(d.token || d.access_token, remember)
     const u = await refreshUser()
     return u
   }
 
-  // ── loginGoogle ───────────────────────────────────────────
+  // ── loginGoogle ───────────────────────────────────────────────────────
   const loginGoogle = () => {
     window.location.href = `${AUTH_BASE}/google`
   }
 
-  // ── logout ────────────────────────────────────────────────
+  // ── logout ────────────────────────────────────────────────────────────
   const logout = () => {
     _clearToken()
     setUser(null)
@@ -136,10 +140,7 @@ export function AuthProvider({ children }) {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
-// ── RequireAuth ────────────────────────────────────────────────────────────
-// Wrap around any component tree that requires authentication.
-// Shows a full-screen loading state, then either renders children
-// (authenticated) or the LoginPage (unauthenticated).
+// ── RequireAuth ─────────────────────────────────────────────────────────────
 export function RequireAuth({ children }) {
   const { user, loading } = useAuth()
 
