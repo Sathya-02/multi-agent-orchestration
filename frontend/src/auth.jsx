@@ -1,43 +1,64 @@
 /**
  * auth.jsx — Auth context + hooks
  *
- * Supports two login modes:
- *   1. Local JWT  — POST /auth/login (username + password) → stores token in memory
- *   2. Google OAuth — redirect to /auth/login/google (existing flow)
+ * Token persistence strategy:
+ *   - sessionStorage  (default)  — survives page reload, cleared when tab closes
+ *   - localStorage   (remember me) — survives browser restart, cleared on logout
  *
- * URL strategy:
- *   - In development (Vite dev server): use RELATIVE paths (/auth/...) so
- *     vite.config.js proxy forwards them to http://localhost:8000.
- *     This avoids CORS and the "404 from Vite" problem.
- *   - In production builds: VITE_API_URL is injected via __API_URL__ at build
- *     time, so absolute URLs are used (https://api.yourdomain.com/auth/...).
- *
- * Provides:
- *   <AuthProvider>    — wraps the app, checks session on mount
- *   <RequireAuth>     — renders children only when logged in, else shows <LoginPage>
- *   useAuth()         — { user, authLoading, authError, loginLocal, loginGoogle, logout }
+ * On mount, AuthProvider re-hydrates the in-memory token from storage BEFORE
+ * calling /auth/me, so the Bearer header is always present after a reload.
  */
 import { createContext, useContext, useEffect, useState, useCallback } from 'react'
 
-/**
- * Resolve base API URL:
- *   - Production build: __API_URL__ is injected by Vite define (e.g. "https://api.example.com")
- *   - Dev (Vite proxy): empty string → all fetches use relative paths → proxy forwards to :8000
- */
 const API_BASE =
   (typeof __API_URL__ !== 'undefined' && __API_URL__)
     ? __API_URL__
     : (import.meta.env.VITE_API_URL || '')
-// API_BASE is '' in local dev — so fetch('/auth/login') goes through Vite proxy to :8000
 
-// Token stored in memory only (no localStorage — sandboxed iframe safe)
+const TOKEN_KEY = 'mao_token'
+const REMEMBER_KEY = 'mao_remember'
+
+// ─── In-memory token (module-level, also backed by storage) ──────────────────
+
 let _memToken = null
 
-export function getToken() { return _memToken }
-export function setToken(t) { _memToken = t }
-export function clearToken() { _memToken = null }
+/** Read token from storage → memory on app start. Call once before any fetch. */
+function _hydrateToken() {
+  try {
+    const remember = localStorage.getItem(REMEMBER_KEY) === 'true'
+    const stored = remember
+      ? localStorage.getItem(TOKEN_KEY)
+      : sessionStorage.getItem(TOKEN_KEY)
+    if (stored) _memToken = stored
+  } catch {}
+}
 
-/** Returns headers object with Authorization bearer token if one exists. */
+export function getToken() { return _memToken }
+
+export function setToken(token, remember = false) {
+  _memToken = token
+  try {
+    if (remember) {
+      localStorage.setItem(REMEMBER_KEY, 'true')
+      localStorage.setItem(TOKEN_KEY, token)
+      sessionStorage.removeItem(TOKEN_KEY)
+    } else {
+      localStorage.removeItem(REMEMBER_KEY)
+      localStorage.removeItem(TOKEN_KEY)
+      sessionStorage.setItem(TOKEN_KEY, token)
+    }
+  } catch {}
+}
+
+export function clearToken() {
+  _memToken = null
+  try {
+    sessionStorage.removeItem(TOKEN_KEY)
+    localStorage.removeItem(TOKEN_KEY)
+    localStorage.removeItem(REMEMBER_KEY)
+  } catch {}
+}
+
 export function authHeaders(extra = {}) {
   return _memToken
     ? { Authorization: `Bearer ${_memToken}`, ...extra }
@@ -46,7 +67,6 @@ export function authHeaders(extra = {}) {
 
 const AuthContext = createContext(null)
 
-/** Safely derive initials from a user object. */
 export function getUserInitials(user) {
   if (!user) return '?'
   const name = user.display_name || user.name || user.email || user.username || ''
@@ -64,24 +84,38 @@ export function AuthProvider({ children }) {
   const [authLoading, setAuthLoading] = useState(true)
   const [authError,   setAuthError]   = useState(null)
 
-  // On mount: check session — works with JWT token (header) or Google OAuth cookie
+  // Hydrate token from storage FIRST, then validate with backend
   useEffect(() => {
+    _hydrateToken()   // ← re-populate _memToken before the fetch below
+
     fetch(`${API_BASE}/auth/me`, {
       credentials: 'include',
-      headers: authHeaders(),
+      headers: authHeaders(),   // now carries the token even after reload
     })
       .then(r => (r.ok ? r.json() : null))
-      .then(u => setUser(u && typeof u === 'object' ? u : null))
+      .then(u => {
+        if (u && typeof u === 'object' && u.username) {
+          setUser(u)
+        } else {
+          // Token present but rejected (expired / revoked) — clear storage
+          clearToken()
+          setUser(null)
+        }
+      })
       .catch(() => {
-        // Backend not reachable — surface error but don't crash
         setAuthError('Could not reach the backend at localhost:8000. Is it running?')
         setUser(null)
       })
       .finally(() => setAuthLoading(false))
   }, [])
 
-  /** Local JWT login: POST /auth/login (form-encoded username + password). */
-  const loginLocal = useCallback(async (username, password) => {
+  /**
+   * Local JWT login.
+   * @param {string}  username
+   * @param {string}  password
+   * @param {boolean} remember  — persist across browser restarts via localStorage
+   */
+  const loginLocal = useCallback(async (username, password, remember = false) => {
     setAuthError(null)
     const body = new URLSearchParams({ username, password })
     const res = await fetch(`${API_BASE}/auth/login`, {
@@ -95,7 +129,7 @@ export function AuthProvider({ children }) {
       throw new Error(err.detail || 'Invalid username or password')
     }
     const data = await res.json()
-    setToken(data.access_token)
+    setToken(data.access_token, remember)   // persist based on remember flag
     setUser({
       username:     data.username,
       role:         data.role,
@@ -105,9 +139,7 @@ export function AuthProvider({ children }) {
     return data
   }, [])
 
-  /** Google OAuth: redirect browser to consent screen. */
   const loginGoogle = useCallback(() => {
-    // For Google OAuth redirect we always need an absolute URL
     const base = API_BASE || 'http://localhost:8000'
     window.location.href = `${base}/auth/login/google`
   }, [])
@@ -139,12 +171,6 @@ export function useAuth() {
   return ctx
 }
 
-/**
- * <RequireAuth>
- * Renders children when the user is authenticated.
- * Shows a spinner while the session check is in-flight.
- * Shows <LoginPage> if the user is not authenticated.
- */
 import LoginPage from './components/LoginPage.jsx'
 
 export function RequireAuth({ children }) {
