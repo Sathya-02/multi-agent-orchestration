@@ -1,16 +1,16 @@
 import '../styles/App.css'
 import { useState } from 'react'
 import { useAuth } from '../auth.jsx'
+import { can } from '../rbac.js'
 import UserWidget  from './UserWidget.jsx'
 import ProfilePage from './ProfilePage.jsx'
 
 /**
- * AppHeader — Top navigation bar.
+ * AppHeader — role-gated nav buttons.
  *
- * Changes:
- *  - UserWidget dropdown now uses a React portal (no overflow clipping)
- *  - Removed "Connected / Connecting…" status text + status dot from header
- *    (connection status is still visible in the InfoBar below)
+ * viewer   : Dashboard, Files (read), Filesystem (read), Knowledge Base (read), Tools (read), Agents (read)
+ * operator : + run tasks, upload, ingest, KB config
+ * admin    : + Settings, Model picker, spawn approvals
  */
 export default function AppHeader({
   connected, currentModel, jobId,
@@ -31,6 +31,17 @@ export default function AppHeader({
   const { user } = useAuth()
   const [showProfile, setShowProfile] = useState(false)
 
+  // Role gates
+  const canViewDashboard  = can(user, 'view_dashboard')
+  const canViewFiles      = can(user, 'view_files')
+  const canViewFs         = can(user, 'view_filesystem')
+  const canViewKb         = can(user, 'view_kb')
+  const canViewTools      = can(user, 'view_tools')
+  const canViewAgents     = can(user, 'view_agents')
+  const canChangeModel    = can(user, 'change_model')
+  const canEditSettings   = can(user, 'edit_settings')
+  const canApproveSpawn   = can(user, 'approve_spawn')
+
   const closeAll = () => {
     setShowDashboard(false); setShowUploadPanel(false); setShowFsPanel(false)
     setShowKbPanel(false);   setShowToolPanel(false);   setShowAgentEditor(false)
@@ -44,13 +55,13 @@ export default function AppHeader({
 
         <div className="header-right">
 
-          {/* Spawn approval badges */}
-          {pendingSpawns.length > 0 && (
+          {/* Spawn approval alerts — operator+ only */}
+          {canApproveSpawn && pendingSpawns.length > 0 && (
             <button className="spawn-alert-btn" onClick={() => setShowAgentEditor(true)}>
               🤖 {pendingSpawns.length} spawn request{pendingSpawns.length > 1 ? 's' : ''}
             </button>
           )}
-          {pendingToolSpawns.length > 0 && (
+          {canApproveSpawn && pendingToolSpawns.length > 0 && (
             <button
               className="spawn-alert-btn"
               style={{ background: 'rgba(16,185,129,.12)', border: '1px solid rgba(16,185,129,.35)', color: '#6ee7b7' }}
@@ -60,74 +71,88 @@ export default function AppHeader({
             </button>
           )}
 
-          {/* Nav buttons */}
-          <button className={`nav-btn ${showDashboard ? 'active' : ''}`}
-            onClick={() => { closeAll(); setShowDashboard(v => !v) }}>
-            📊 Dashboard
-          </button>
+          {/* Nav buttons — shown only if role allows */}
+          {canViewDashboard && (
+            <button className={`nav-btn ${showDashboard ? 'active' : ''}`}
+              onClick={() => { closeAll(); setShowDashboard(v => !v) }}>
+              📊 Dashboard
+            </button>
+          )}
 
-          <button className={`nav-btn ${showUploadPanel ? 'active' : ''}`}
-            onClick={() => { closeAll(); setShowUploadPanel(v => !v) }}>
-            📎 Files {uploads.length > 0 && <span className="nav-badge">{uploads.length}</span>}
-          </button>
+          {canViewFiles && (
+            <button className={`nav-btn ${showUploadPanel ? 'active' : ''}`}
+              onClick={() => { closeAll(); setShowUploadPanel(v => !v) }}>
+              📎 Files {uploads.length > 0 && <span className="nav-badge">{uploads.length}</span>}
+            </button>
+          )}
 
-          <button className={`nav-btn ${showFsPanel ? 'active' : ''}`}
-            onClick={() => { closeAll(); setShowFsPanel(v => !v); if (!showFsPanel) fetchFsConfig() }}>
-            📁 Filesystem
-          </button>
+          {canViewFs && (
+            <button className={`nav-btn ${showFsPanel ? 'active' : ''}`}
+              onClick={() => { closeAll(); setShowFsPanel(v => !v); if (!showFsPanel) fetchFsConfig() }}>
+              📁 Filesystem
+            </button>
+          )}
 
-          <button className={`nav-btn ${showKbPanel ? 'active' : ''}`}
-            onClick={() => { closeAll(); setShowKbPanel(v => !v); if (!showKbPanel) { fetchKbEntries(); fetchKbConfig() } }}>
-            📚 Knowledge Base <span className="nav-badge">{kbEntries.count || 0}</span>
-          </button>
+          {canViewKb && (
+            <button className={`nav-btn ${showKbPanel ? 'active' : ''}`}
+              onClick={() => { closeAll(); setShowKbPanel(v => !v); if (!showKbPanel) { fetchKbEntries(); fetchKbConfig() } }}>
+              📚 Knowledge Base <span className="nav-badge">{kbEntries.count || 0}</span>
+            </button>
+          )}
 
-          <button className={`nav-btn ${showToolPanel ? 'active' : ''}`}
-            onClick={() => { closeAll(); setShowToolPanel(v => !v) }}>
-            🔧 Tools <span className="nav-badge">{tools.length}</span>
-          </button>
+          {canViewTools && (
+            <button className={`nav-btn ${showToolPanel ? 'active' : ''}`}
+              onClick={() => { closeAll(); setShowToolPanel(v => !v) }}>
+              🔧 Tools <span className="nav-badge">{tools.length}</span>
+            </button>
+          )}
 
-          <button className={`nav-btn ${showAgentEditor ? 'active' : ''}`}
-            onClick={() => { closeAll(); setShowAgentEditor(v => !v) }}>
-            🤖 Agents <span className="nav-badge">{agents.length}</span>
-          </button>
+          {canViewAgents && (
+            <button className={`nav-btn ${showAgentEditor ? 'active' : ''}`}
+              onClick={() => { closeAll(); setShowAgentEditor(v => !v) }}>
+              🤖 Agents <span className="nav-badge">{agents.length}</span>
+            </button>
+          )}
 
-          <button className={`nav-btn ${showSettings ? 'active' : ''}`}
-            onClick={() => {
-              closeAll(); setShowSettings(v => !v)
-              if (!showSettings) { fetchTelegramConfig(); fetchSiConfig(); fetchBestPractices(); fetchProposals() }
-            }}>
-            ⚙️ Settings
-          </button>
+          {/* Settings — admin only */}
+          {canEditSettings && (
+            <button className={`nav-btn ${showSettings ? 'active' : ''}`}
+              onClick={() => {
+                closeAll(); setShowSettings(v => !v)
+                if (!showSettings) { fetchTelegramConfig(); fetchSiConfig(); fetchBestPractices(); fetchProposals() }
+              }}>
+              ⚙️ Settings
+            </button>
+          )}
 
-          {/* Model badge */}
-          <button
-            className="model-badge"
-            onClick={() => { closeAll(); setShowModelPanel(v => !v); fetchModels() }}
-            style={{ '--badge-color': modelBadgeColor() }}
-            title="Change model"
-          >
-            <span className="model-dot" />
-            {currentModel}
-            <span className="model-chevron">{showModelPanel ? '▲' : '▼'}</span>
-          </button>
+          {/* Model badge — admin only */}
+          {canChangeModel && (
+            <button
+              className="model-badge"
+              onClick={() => { closeAll(); setShowModelPanel(v => !v); fetchModels() }}
+              style={{ '--badge-color': modelBadgeColor() }}
+              title="Change model"
+            >
+              <span className="model-dot" />
+              {currentModel}
+              <span className="model-chevron">{showModelPanel ? '▲' : '▼'}</span>
+            </button>
+          )}
 
           {/* Separator */}
-          <div style={{ width: 1, height: 16, background: 'rgba(99,102,241,0.3)', margin: '0 6px' }} />
+          <div style={{ width:1, height:16, background:'rgba(99,102,241,0.3)', margin:'0 6px' }} />
 
-          {/* User widget — avatar + role badge + dropdown (portal-rendered) */}
+          {/* User widget */}
           {user && <UserWidget onOpenProfile={() => setShowProfile(true)} />}
 
-          {/* Job ID badge (shown only while a job is running) */}
           {jobId && (
-            <span style={{ marginLeft: 6, color: '#6366f1', fontSize: 11, whiteSpace: 'nowrap' }}>
+            <span style={{ marginLeft:6, color:'#6366f1', fontSize:11, whiteSpace:'nowrap' }}>
               Job #{jobId}
             </span>
           )}
-
         </div>
       </header>
 
-      {/* Profile page overlay */}
       {showProfile && <ProfilePage onClose={() => setShowProfile(false)} />}
     </>
   )
