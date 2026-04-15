@@ -283,7 +283,7 @@ except Exception as e:
     OLLAMA_URL   = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 
 # ---------------------------------------------------------------------------
-# Auth
+# Auth (legacy simple token)
 # ---------------------------------------------------------------------------
 AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "")
 security   = HTTPBearer(auto_error=False)
@@ -306,7 +306,6 @@ class RunRequest(BaseModel):
     mode: str = "research"
     uploaded_files: List[str] = []
 
-# FIX: field name matches App.jsx { source_name, text, tags }
 class KBIngestText(BaseModel):
     text: str
     source_name: str = "paste"
@@ -319,7 +318,7 @@ class KBConfigUpdate(BaseModel):
     top_k:            Optional[int]   = None
     min_score:        Optional[float] = None
     embed_model:      Optional[str]   = None
-    use_ollama_embed: Optional[bool]  = None  # was missing
+    use_ollama_embed: Optional[bool]  = None
 
 class AgentCreate(BaseModel):
     role:      str
@@ -440,13 +439,41 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Multi-Agent Orchestration", lifespan=lifespan)
 
+# ---------------------------------------------------------------------------
+# CORS
+# ---------------------------------------------------------------------------
+# IMPORTANT: When allow_credentials=True, browsers reject allow_origins=["*"].
+# List all origins that the frontend runs on (dev + prod).
+_CORS_ORIGINS = [
+    "http://localhost:5173",   # Vite dev server
+    "http://localhost:3000",   # CRA / Next dev
+    "http://localhost:4173",   # Vite preview
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+]
+# Allow additional origins from env var (comma-separated), e.g. in production:
+#   CORS_ORIGINS=https://app.yourdomain.com
+_extra = os.environ.get("CORS_ORIGINS", "")
+if _extra:
+    _CORS_ORIGINS += [o.strip() for o in _extra.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ---------------------------------------------------------------------------
+# Auth router  — /auth/*
+# ---------------------------------------------------------------------------
+try:
+    from routers.auth_router import router as auth_router
+    app.include_router(auth_router)
+    logger.info("Auth router registered at /auth")
+except Exception as _auth_import_err:
+    logger.warning(f"Auth router not available: {_auth_import_err}")
 
 # ---------------------------------------------------------------------------
 # Broadcast helpers
@@ -815,19 +842,6 @@ async def decide_tool_spawn(body: ToolSpawnDecision, current_user=_auth_dep):
 
 # ---------------------------------------------------------------------------
 # KNOWLEDGE BASE  /kb/*
-#
-# Endpoint audit (frontend fetch  ↔  backend route):
-#   GET  /kb/entries          ✅ list_entries
-#   GET  /kb/config           ✅ kb_get_config
-#   PUT  /kb/config           ✅ kb_update_config
-#   POST /kb/ingest-text      ✅ kb_ingest_text_endpoint  (body: {text,source_name,tags})
-#   POST /kb/ingest-file      ✅ kb_ingest_file           (FormData: file + tags string)
-#   DELETE /kb/sources/:src   ✅ kb_delete_source_alias
-#   DELETE /kb/source/:src    ✅ kb_delete_source
-#   POST /kb/clear            ✅ kb_clear
-#   GET  /kb/search?q=        ✅ kb_search_endpoint
-#   POST /kb/query            ✅ kb_rag_query
-#   POST /kb/reindex          ✅ kb_reindex
 # ---------------------------------------------------------------------------
 
 @app.get("/kb/entries")
@@ -866,37 +880,26 @@ def kb_ingest_text_endpoint(body: KBIngestText, current_user=_auth_dep):
     result = ingest_text(body.text, body.source_name, tags=body.tags)
     return result
 
-# FIX: added `tags: str = Form('')` so FormData with both 'file' and 'tags'
-# fields is accepted. Without this declaration FastAPI returns 422 which
-# proxies/browsers surface as 404.
 @app.post("/kb/ingest-file")
 async def kb_ingest_file(
     file: UploadFile = File(...),
-    tags: str        = Form(''),         # ← was missing; App.jsx sends fd.append('tags', ...)
+    tags: str        = Form(''),
     current_user=_auth_dep,
 ):
     if not RAG_ENABLED:
         raise HTTPException(status_code=404, detail="RAG disabled")
-
-    # Safe filename — file.filename can be None in some browser/OS combos
     safe_name = file.filename or f"upload_{uuid.uuid4().hex[:8]}"
     dest = KB_DIR / safe_name
-
     with open(dest, "wb") as fh:
         shutil.copyfileobj(file.file, fh)
-
-    # Parse comma-separated tags string from FormData
     tag_list = [t.strip() for t in tags.split(',') if t.strip()] if tags else []
-
     try:
         result = ingest_file(dest, tags=tag_list)
     finally:
-        # Remove temp file after ingestion (KB stores chunks, not the raw file)
         try:
             dest.unlink(missing_ok=True)
         except Exception:
             pass
-
     return result
 
 @app.delete("/kb/entries/{entry_id}")
@@ -906,7 +909,6 @@ def kb_delete_entry(entry_id: str, current_user=_auth_dep):
     delete_entry(entry_id)
     return {"deleted": entry_id}
 
-# Canonical singular route
 @app.delete("/kb/source/{source}")
 def kb_delete_source(source: str, current_user=_auth_dep):
     if not RAG_ENABLED:
@@ -914,7 +916,6 @@ def kb_delete_source(source: str, current_user=_auth_dep):
     removed = delete_source(source)
     return {"deleted": source, "chunks_removed": removed}
 
-# Alias plural route — App.jsx calls DELETE /kb/sources/:source
 @app.delete("/kb/sources/{source}")
 def kb_delete_source_alias(source: str, current_user=_auth_dep):
     if not RAG_ENABLED:
@@ -932,7 +933,6 @@ def kb_clear(current_user=_auth_dep):
 @app.get("/kb/search")
 def kb_search_endpoint(q: str = Query(...), current_user=_auth_dep):
     if not RAG_ENABLED:
-        # Return 200 with empty results — never 404/405 for a supported route
         return {"results": [], "error": "RAG disabled"}
     try:
         results = retrieve(q)
@@ -954,7 +954,6 @@ def kb_rag_query(body: RAGQuery, current_user=_auth_dep):
 
 @app.post("/kb/reindex")
 def kb_reindex(current_user=_auth_dep):
-    """Re-embed all store entries with the current embedding function."""
     if not RAG_ENABLED:
         raise HTTPException(status_code=404, detail="RAG disabled")
     return reindex_store()
