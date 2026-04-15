@@ -1,7 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
-import { AuthProvider } from './auth.jsx'
+import { AuthProvider, RequireAuth } from './auth.jsx'
 import './styles/App.css'
 import './styles/auth.css'
 
@@ -56,11 +56,19 @@ class ErrorBoundary extends React.Component {
   }
 }
 
+/**
+ * App tree:
+ *   AuthProvider      — loads session on mount, exposes useAuth()
+ *     RequireAuth     — shows <LoginPage> until user is authenticated
+ *       App           — the main application (only rendered when logged in)
+ */
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <ErrorBoundary>
       <AuthProvider>
-        <App />
+        <RequireAuth>
+          <App />
+        </RequireAuth>
       </AuthProvider>
     </ErrorBoundary>
   </React.StrictMode>,
