@@ -93,6 +93,11 @@ REQUIRE_API_KEY=false
 OLLAMA_MODEL=phi3:mini
 SESSION_SECRET=local-dev-secret-change-in-prod
 
+# Local JWT auth (new)
+AUTH_SECRET_KEY=local-dev-secret-change-in-production
+ACCESS_TOKEN_EXPIRE_MINUTES=480
+# AUTH_DISABLED=false   # set true ONLY for solo local dev with no shared access
+
 # Google OAuth — leave empty to disable (default)
 # GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
 # GOOGLE_CLIENT_SECRET=your-secret
@@ -107,12 +112,16 @@ MAO_DB_NAME=mao_production
 REQUIRE_API_KEY=true
 MASTER_API_KEY=<strong-secret>
 
+# Local JWT auth
+AUTH_SECRET_KEY=<32-byte-random-hex>   # python -c "import secrets; print(secrets.token_hex(32))"
+ACCESS_TOKEN_EXPIRE_MINUTES=480
+
 GOOGLE_CLIENT_ID=<prod-client-id>.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=<prod-secret>
 GOOGLE_REDIRECT_URI=https://yourdomain.com/auth/callback/google
 OAUTH_SUCCESS_REDIRECT=https://yourdomain.com
 
-SESSION_SECRET=<32-byte-random-hex>   # python -c "import secrets; print(secrets.token_hex(32))"
+SESSION_SECRET=<32-byte-random-hex>
 
 ALLOWED_EMAIL_DOMAINS=yourcompany.com
 ADMIN_EMAILS=admin@yourcompany.com
@@ -125,15 +134,68 @@ ALLOWED_ORIGINS=https://yourdomain.com
 
 ## Authentication & Authorisation
 
-Two auth modes coexist — API keys for programmatic clients, Google OAuth for browser users.
+Three auth modes coexist — local JWT login for workspace access, API keys for programmatic clients, and Google OAuth for browser users.
 
-### 1 — API key (programmatic)
+### 1 — Local Login (JWT — new)
+
+A built-in username/password login system for the local workspace with **role-based access control (RBAC)**. No external services required — all users are stored in `backend/users.json`.
+
+#### Roles
+
+| Role | Level | Permitted Features |
+|----------|-------|--------------------|
+| `viewer` | 1 | Read agents, tasks, logs, knowledge base, settings |
+| `operator`| 2 | Viewer + run tasks, upload docs, RAG search, chat, web search |
+| `admin` | 3 | All + manage users, agents, settings, self-improver |
+
+#### Activation
+
+1. Register the router in `backend/main.py`:
+   ```python
+   from routers.auth_router import router as auth_router
+   app.include_router(auth_router)
+   ```
+2. Set `AUTH_SECRET_KEY` in `.env.local` (any random string for local use).
+3. **Change default passwords** — three seed users exist (`admin`, `operator`, `viewer`), all with password `password`.
+
+#### Local auth endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/auth/login` | Get JWT token (form: `username` + `password`) |
+| GET | `/auth/me` | Current user info |
+| GET | `/auth/roles` | List roles and permissions |
+| GET | `/auth/users` | List all users (admin only) |
+| POST | `/auth/users` | Create user (admin only) |
+| PATCH | `/auth/users/{user}` | Update role / password / status (admin only) |
+| DELETE | `/auth/users/{user}` | Delete user (admin only) |
+
+#### Protecting routes
+
+```python
+from middleware.auth_middleware import viewer_required, operator_required, admin_required, UserToken
+
+@app.get("/agents")
+async def get_agents(user: UserToken = viewer_required): ...
+
+@app.post("/run")
+async def run_task(data: dict, user: UserToken = operator_required): ...
+
+@app.post("/agents")
+async def create_agent(data: dict, user: UserToken = admin_required): ...
+```
+
+See [`docs/LOGIN_AND_RBAC.md`](docs/LOGIN_AND_RBAC.md) for the full guide.
+
+---
+
+### 2 — API key (programmatic)
 
 - Set `REQUIRE_API_KEY=true` and `MASTER_API_KEY=<secret>` in production.
 - Pass the key as `Authorization: Bearer <key>` or `?key=<key>`.
 - Disabled by default for `local` and `dev` (`REQUIRE_API_KEY=false`).
 
-### 2 — Google OAuth (browser login)
+### 3 — Google OAuth (browser login)
 
 - Enabled by setting `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
 - When those vars are **empty** (local default), the login button is hidden and the API stubs `/auth/me` as a local admin — no friction during development.
@@ -162,13 +224,19 @@ Configure via environment variables — no code changes needed:
 | Any other allowed email/domain    | `free`       | false      |
 | Disallowed domain                 | 403 Forbidden| —          |
 
-### Auth endpoints
+### All auth endpoints
 
 | Method | Path                    | Description                                |
 |--------|-------------------------|-----------------------------------------|
+| POST   | `/auth/login`           | Local JWT login (username + password)     |
+| GET    | `/auth/me`              | Returns current user as JSON              |
+| GET    | `/auth/roles`           | List roles and permissions                |
+| GET    | `/auth/users`           | List users (admin only)                   |
+| POST   | `/auth/users`           | Create user (admin only)                  |
+| PATCH  | `/auth/users/{user}`    | Update user (admin only)                  |
+| DELETE | `/auth/users/{user}`    | Delete user (admin only)                  |
 | GET    | `/auth/login/google`    | Redirect browser to Google consent screen |
 | GET    | `/auth/callback/google` | OAuth callback — sets session cookie      |
-| GET    | `/auth/me`              | Returns current user as JSON              |
 | POST   | `/auth/logout`          | Clears the session cookie                 |
 
 ---
@@ -197,7 +265,13 @@ multi-agent-orchestration/
 ├── backend/
 │   ├── main.py              # FastAPI app entry point + all HTTP routes
 │   ├── settings.py          # All configuration (single source of truth)
+│   ├── auth.py              # Local JWT auth engine + RBAC (new)
+│   ├── users.json           # Local user store with roles (new, gitignored)
 │   ├── requirements.txt
+│   ├── routers/
+│   │   └── auth_router.py   # /auth/* endpoints (new)
+│   ├── middleware/
+│   │   └── auth_middleware.py  # require_role() guards (new)
 │   ├── agents/              # Agent definitions and registry
 │   ├── tools/               # Tool definitions and registry
 │   ├── infra/
@@ -206,6 +280,8 @@ multi-agent-orchestration/
 │   │   └── db/
 │   │       └── init.sql     # Postgres schema (idempotent)
 │   └── data/                # Runtime JSON state (gitignored)
+├── docs/
+│   └── LOGIN_AND_RBAC.md    # Local auth & RBAC setup guide (new)
 ├── frontend/
 │   └── src/
 │       └── App.jsx          # Single-page React app
@@ -253,3 +329,7 @@ BACKEND_PORT=8001 ./setup.sh local
 **403 after login** — your email domain is not in `ALLOWED_EMAIL_DOMAINS`. Add it to `.env.production` and restart the backend.
 
 **Login button not showing locally** — `GOOGLE_CLIENT_ID` is empty. This is intentional for local development. Set it in `.env.local` (or `.env.dev`) to enable OAuth locally.
+
+**JWT token errors** — ensure `AUTH_SECRET_KEY` is set in your `.env` file and matches across backend restarts. Tokens signed with a different key will be rejected.
+
+**401 Unauthorized on all requests** — check that `AUTH_DISABLED` is not accidentally set to `false` when you expected it to bypass auth. Set `AUTH_DISABLED=true` only for solo local dev.
