@@ -6,7 +6,7 @@ export default function AgentEditorPanel({
   skillsText, setSkillsText, skillsSaving, skillsAgentId, setSkillsAgentId,
   pendingSpawns, spawnEnabled, spawnToggling,
   handleCreateAgent, handleUpdateAgent, handleDeleteAgent,
-  handleToggleActive, handleSaveSkills, handleSpawnDecision, handleToggleSpawn,
+  handleToggleActive, handleSaveSkills, handleOpenSkills, handleSpawnDecision, handleToggleSpawn,
   onClose
 }) {
   const form = editingAgent || newAgentForm
@@ -36,7 +36,13 @@ export default function AgentEditorPanel({
       {/* Tabs */}
       <div className="agent-tabs">
         {['list','create','skills','spawns'].map(t => (
-          <button key={t} className={`agent-tab${agentTab === t ? ' active' : ''}`} onClick={() => setAgentTab(t)}>
+          <button key={t} className={`agent-tab${agentTab === t ? ' active' : ''}`} onClick={() => {
+            // When switching to skills tab directly (from header), reload content for current agent
+            if (t === 'skills' && skillsAgentId && handleOpenSkills) {
+              handleOpenSkills(skillsAgentId)
+            }
+            setAgentTab(t)
+          }}>
             {{
               list:   '📋 Agents',
               create: editingAgent ? '✏️ Edit' : '➕ Create',
@@ -69,10 +75,7 @@ export default function AgentEditorPanel({
                   {a.active === false ? '▶' : '⏸'}
                 </button>
                 <button className="agent-action-btn" title="Edit Skills"
-                  onClick={() => {
-                    setSkillsAgentId(a.id)
-                    setAgentTab('skills')
-                  }}>📄</button>
+                  onClick={() => handleOpenSkills(a.id)}>📄</button>
                 <button className="agent-action-btn danger" title="Delete"
                   onClick={() => handleDeleteAgent(a.id)}>🗑</button>
               </div>
@@ -112,19 +115,27 @@ export default function AgentEditorPanel({
       {/* ── SKILLS TAB ── */}
       {agentTab === 'skills' && (
         <div style={{ padding:'12px 16px', display:'flex', flexDirection:'column', flex:1, gap:8 }}>
-          <div style={{ fontSize:'11px', color:'var(--tx-muted)' }}>
-            Editing <strong>SKILLS.md</strong> for agent: <code style={{ fontFamily:'var(--mono)', color:'var(--accent)' }}>{skillsAgentId || '—'}</code>
-          </div>
-          <textarea
-            className="skills-editor"
-            value={skillsText}
-            onChange={e => setSkillsText(e.target.value)}
-            rows={18}
-            placeholder="# Skills\n\nDescribe what this agent is good at..."
-          />
-          <button className="agent-save-btn" onClick={handleSaveSkills} disabled={skillsSaving}>
-            {skillsSaving ? '⟳ Saving…' : '💾 Save Skills'}
-          </button>
+          {skillsAgentId ? (
+            <>
+              <div style={{ fontSize:'11px', color:'var(--tx-muted)' }}>
+                Editing <strong>SKILLS.md</strong> for agent: <code style={{ fontFamily:'var(--mono)', color:'var(--accent)' }}>{skillsAgentId}</code>
+              </div>
+              <textarea
+                className="skills-editor"
+                value={skillsText}
+                onChange={e => setSkillsText(e.target.value)}
+                rows={18}
+                placeholder="# Skills&#10;&#10;Describe what this agent is good at..."
+              />
+              <button className="agent-save-btn" onClick={handleSaveSkills} disabled={skillsSaving}>
+                {skillsSaving ? '⟳ Saving…' : '💾 Save Skills'}
+              </button>
+            </>
+          ) : (
+            <div className="empty-hint">
+              Select an agent from the 📋 Agents list and click 📄 to edit its skills.
+            </div>
+          )}
         </div>
       )}
 
