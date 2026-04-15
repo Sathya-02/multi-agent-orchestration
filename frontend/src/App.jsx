@@ -212,11 +212,17 @@ export default function App() {
   }, [])
 
   // ── Helpers ───────────────────────────────────────────────
+  // FIX: relaxed deduplication — only suppress if same agent emits the
+  // identical message within 1 second. The previous guard (no time check)
+  // was silently dropping consecutive agent_activity events from the same
+  // agent (e.g. "queued" phase banner followed immediately by the first
+  // step-callback message), so nothing appeared in the feed.
   const addLog = useCallback((agent, label, message, phase = false, ts = null, taskResult = false) =>
     setLogs(prev => {
+      const now  = ts || Date.now() / 1000
       const last = prev[prev.length - 1]
-      if (last && last.agent === agent && last.message === message) return prev
-      return [...prev.slice(-150), { agent, label, message, phase, taskResult, ts: ts || Date.now() / 1000 }]
+      if (last && last.agent === agent && last.message === message && (now - last.ts) < 1) return prev
+      return [...prev.slice(-150), { agent, label, message, phase, taskResult, ts: now }]
     }), [])
 
   // ── Fetch functions ───────────────────────────────────────
