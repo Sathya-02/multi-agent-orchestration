@@ -1,119 +1,135 @@
+/**
+ * FilesystemPanel.jsx  (RBAC-gated)
+ *
+ * viewer   : read-only — can browse directory listing, no write operations
+ * operator : full filesystem read + write (create, delete, save)
+ * admin    : same as operator
+ */
+import { useState } from 'react'
 import '../../styles/App.css'
+import { useAuth } from '../../auth.jsx'
+import { can } from '../../rbac.js'
 
 export default function FilesystemPanel({
-  fsConfig, fsAudit, fsAuditTab, setFsAuditTab, fetchFsAudit,
-  newFsPath, setNewFsPath, newFsLabel, setNewFsLabel,
-  newFsRead, setNewFsRead, newFsWrite, setNewFsWrite, newFsEdit, setNewFsEdit,
-  fsError, outputDirInput, setOutputDirInput,
-  handleAddFsAccess, handleRemoveFsAccess, handleToggleFsFlag, handleSetOutputDir,
+  fsConfig, setFsConfig, fsSaving, handleSaveFsConfig,
+  fsTree, fsLoading, handleFsBrowse,
+  fsFileContent, handleFsReadFile, handleFsWriteFile, handleFsDeleteFile,
   onClose
 }) {
-  const accessList = Array.isArray(fsConfig?.access_list) ? fsConfig.access_list : []
+  const { user } = useAuth()
+  const canWrite = can(user, 'filesystem_write')
+
+  const [fsTab, setFsTab]     = useState('browse')
+  const [editPath, setEditPath] = useState('')
+  const [editContent, setEditContent] = useState('')
+
+  const TABS = [
+    { key:'browse', label:'📁 Browse' },
+    ...(canWrite ? [{ key:'edit', label:'✏️ Edit File' }, { key:'config', label:'⚙️ Config' }] : []),
+  ]
 
   return (
     <div className="overlay-panel fs-panel">
       <div className="overlay-header">
-        <span>📁 Filesystem Access</span>
+        <span>📁 Filesystem</span>
         <button className="overlay-close" onClick={onClose}>✕</button>
       </div>
 
-      {/* Tabs */}
-      <div style={{ display:'flex', gap:4, padding:'8px 16px 0', borderBottom:'1px solid var(--bd-subtle)' }}>
-        {[['config','⚙️ Config'],['audit','📋 Audit Log']].map(([k,v]) => (
-          <button key={k}
-            className={`agent-tab${!fsAuditTab && k==='config' || fsAuditTab && k==='audit' ? ' active' : ''}`}
-            onClick={() => { setFsAuditTab(k==='audit'); if(k==='audit') fetchFsAudit() }}>
-            {v}
-          </button>
+      {!canWrite && (
+        <div style={{ ...viewerBanner, margin:'10px 14px 0' }}>🔒 Filesystem is read-only for your role.</div>
+      )}
+
+      <div className="agent-tabs">
+        {TABS.map(t => (
+          <button key={t.key} className={`agent-tab${fsTab === t.key ? ' active' : ''}`}
+            onClick={() => setFsTab(t.key)}>{t.label}</button>
         ))}
       </div>
 
-      {!fsAuditTab ? (
-        /* ── CONFIG ── */
-        <div className="fs-body">
-          {/* Output dir */}
-          <div className="fs-section-label">Output Directory</div>
-          {fsConfig?.output_dir && (
-            <div className="fs-active-path">📂 {fsConfig.output_dir}</div>
+      {/* ── BROWSE ── */}
+      {fsTab === 'browse' && (
+        <div className="kb-body">
+          <div style={{ display:'flex', gap:8, marginBottom:10 }}>
+            <input className="topic-input" style={{ flex:1, marginBottom:0 }}
+              placeholder="Path to browse (e.g. /workspace)"
+              defaultValue={fsConfig?.root_path || ''}
+              id="fs-browse-input" />
+            <button className="fs-apply-btn"
+              onClick={() => handleFsBrowse(document.getElementById('fs-browse-input').value)}
+              disabled={fsLoading}>
+              {fsLoading ? '…' : '🔍'}
+            </button>
+          </div>
+          {fsTree && (
+            <pre style={{ fontSize:11, color:'var(--tx-secondary)', whiteSpace:'pre-wrap', lineHeight:1.6, margin:0 }}>
+              {typeof fsTree === 'string' ? fsTree : JSON.stringify(fsTree, null, 2)}
+            </pre>
           )}
-          <div className="fs-output-row">
+        </div>
+      )}
+
+      {/* ── EDIT FILE (operator+) ── */}
+      {fsTab === 'edit' && canWrite && (
+        <div className="kb-body">
+          <div style={{ display:'flex', gap:8, marginBottom:8 }}>
             <input className="topic-input" style={{ flex:1, marginBottom:0 }}
-              value={outputDirInput} onChange={e => setOutputDirInput(e.target.value)}
-              placeholder="/absolute/path/to/output" />
-            <button className="fs-apply-btn" onClick={handleSetOutputDir}>Set</button>
+              value={editPath} onChange={e => setEditPath(e.target.value)}
+              placeholder="File path (e.g. /workspace/notes.txt)" />
+            <button className="fs-apply-btn"
+              onClick={async () => {
+                const content = await handleFsReadFile(editPath)
+                setEditContent(typeof content === 'string' ? content : JSON.stringify(content, null, 2))
+              }}>📖 Read</button>
           </div>
-
-          {/* Add access entry */}
-          <div className="fs-section-label" style={{ marginTop:16 }}>Add Access Path</div>
-          <input className="topic-input" style={{ marginBottom:6 }}
-            value={newFsLabel} onChange={e => setNewFsLabel(e.target.value)} placeholder="Label (optional)" />
-          <div className="fs-add-row">
-            <input className="topic-input" style={{ flex:1, marginBottom:0 }}
-              value={newFsPath} onChange={e => setNewFsPath(e.target.value)}
-              placeholder="/absolute/path or /path/*.ext" />
-            <button className="fs-apply-btn" onClick={handleAddFsAccess}>Add</button>
-          </div>
-          <div className="fs-flags-row">
-            {[['read','R','var(--bd-mid)',newFsRead,setNewFsRead],
-              ['write','W','#fde68a',newFsWrite,setNewFsWrite],
-              ['edit','E','#6ee7b7',newFsEdit,setNewFsEdit]].map(([k,lbl,col,val,set]) => (
-              <label key={k} className="fs-flag-check" onClick={() => set(!val)}>
-                <input type="checkbox" checked={val} onChange={() => set(!val)} style={{ accentColor:col }} />
-                <span className="fs-flag-label" style={{ color:col }}>{lbl}</span>
-              </label>
-            ))}
-          </div>
-
-          {fsError && <div className="fs-error">{fsError}</div>}
-
-          {/* Access list */}
-          <div className="fs-section-label" style={{ marginTop:12 }}>Allowed Paths ({accessList.length})</div>
-          {accessList.length === 0 && <div className="empty-hint">No access paths configured.</div>}
-          <div className="fs-access-list">
-            {accessList.map((entry, i) => (
-              <div key={`${entry.path}-${i}`} className="fs-access-card">
-                <div className="fs-access-top">
-                  <span className="fs-access-label">{entry.label || entry.path}</span>
-                  <button className="del-btn" onClick={() => handleRemoveFsAccess(entry.path)} title="Remove">🗑</button>
-                </div>
-                <div className="fs-access-path">{entry.path}</div>
-                <div className="fs-access-flags">
-                  {['read','write','edit'].map(flag => (
-                    <button key={flag}
-                      className={`fs-flag-toggle fs-flag-${flag}${entry[flag] ? ' active' : ''}`}
-                      onClick={() => handleToggleFsFlag(entry.path, flag, entry[flag])}>
-                      {flag[0].toUpperCase()}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div className="fs-info-box">
-            💡 Agents can only access paths listed here. Use wildcards like <code style={{ fontFamily:'var(--mono)' }}>/data/*.csv</code> for pattern matching.
+          <textarea className="topic-input"
+            value={editContent}
+            onChange={e => setEditContent(e.target.value)}
+            rows={14}
+            placeholder="File content appears here after Read…" />
+          <div style={{ display:'flex', gap:8, marginTop:8 }}>
+            <button className="run-btn" style={{ flex:1 }}
+              onClick={() => handleFsWriteFile(editPath, editContent)}
+              disabled={!editPath.trim() || !editContent.trim()}>
+              💾 Save File
+            </button>
+            <button className="agent-action-btn danger"
+              onClick={() => { if(window.confirm(`Delete ${editPath}?`)) handleFsDeleteFile(editPath) }}
+              disabled={!editPath.trim()}>
+              🗑 Delete
+            </button>
           </div>
         </div>
-      ) : (
-        /* ── AUDIT ── */
-        <div className="fs-body">
-          <div className="fs-section-label">Recent File Operations</div>
-          {fsAudit.length === 0 && <div className="empty-hint">No audit entries yet.</div>}
-          <div className="fs-audit-list">
-            {fsAudit.map((row, i) => (
-              <div key={i} className={`fs-audit-row${row.allowed === false ? ' denied' : ''}`}>
-                <span className={`fs-audit-op fs-op-${row.op?.toLowerCase()}`}>{row.op}</span>
-                <span className={`fs-audit-status ${row.allowed !== false ? 'allowed' : 'denied'}`}>
-                  {row.allowed !== false ? '✓' : '✗'}
-                </span>
-                <span className="fs-audit-path">{row.path}</span>
-                {row.detail && <span className="fs-audit-detail">{row.detail}</span>}
-                {row.ts && <span className="fs-audit-time">{new Date(row.ts * 1000).toLocaleTimeString()}</span>}
-              </div>
-            ))}
+      )}
+
+      {/* ── CONFIG (operator+) ── */}
+      {fsTab === 'config' && canWrite && (
+        <div className="kb-body">
+          <div className="tg-config-row">
+            <div className="tg-label">Root Path</div>
+            <input className="topic-input"
+              value={fsConfig?.root_path || ''}
+              onChange={e => setFsConfig(p => ({ ...p, root_path: e.target.value }))}
+              placeholder="/workspace" />
           </div>
+          <div className="si-row">
+            <span className="si-label">Write Enabled</span>
+            <button className={`si-toggle ${fsConfig?.write_enabled ? 'on' : 'off'}`}
+              onClick={() => setFsConfig(p => ({ ...p, write_enabled: !p.write_enabled }))}>
+              {fsConfig?.write_enabled ? '🟢 On' : '🔴 Off'}
+            </button>
+          </div>
+          <button className="run-btn" style={{ marginTop:10 }} onClick={handleSaveFsConfig} disabled={fsSaving}>
+            {fsSaving ? '⟳ Saving…' : '💾 Save Config'}
+          </button>
         </div>
       )}
     </div>
   )
+}
+
+const viewerBanner = {
+  padding: '8px 12px', borderRadius: 7,
+  background: 'rgba(99,102,241,0.08)',
+  border: '1px solid rgba(99,102,241,0.2)',
+  color: '#a5b4fc', fontSize: 12,
 }
