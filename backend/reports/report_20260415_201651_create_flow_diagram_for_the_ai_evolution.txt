@@ -1,0 +1,21 @@
+RESEARCH REPORT
+============================================================
+Topic:     create flow diagram for the ai evolution
+Job ID:    efeb4d51
+Generated: 2026-04-15 20:16:51
+============================================================
+
+The evolution of artificial intelligence has been marked by significant milestones, from the development of rule-based systems to complex neural networks and deep learning algorithms that have revolutionized modern AI applications (summariser('AI_evolution.txt')). However, as we look towards future prospects for this technology, it is essential to address ethical concerns surrounding job displacement due to automation bias while leveraging the potential benefits of artificial intelligence in various industries and sectors.
+
+--- Report Metadata ---
+Topic:              create flow diagram for the ai evolution
+Job ID:             efeb4d51
+Generated:          2026-04-15 20:16:51
+Model:              phi3:mini
+Temperature:        0.3
+Top-K:              default
+Top-P:              default
+Context Window:     4096
+Repeat Penalty:     default
+Confidence Score:   N/A
+Active Agents:      Researcher, Analyst, Writer

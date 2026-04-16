@@ -1,0 +1,21 @@
+RESEARCH REPORT
+============================================================
+Topic:     Impact of AI on software development
+Job ID:    9d416b1a
+Generated: 2026-04-15 23:22:08
+============================================================
+
+Agent stopped due to iteration limit or time limit.
+
+--- Report Metadata ---
+Topic:              Impact of AI on software development
+Job ID:             9d416b1a
+Generated:          2026-04-15 23:22:08
+Model:              phi3:mini
+Temperature:        0.3
+Top-K:              default
+Top-P:              default
+Context Window:     4096
+Repeat Penalty:     default
+Confidence Score:   N/A
+Active Agents:      Coordinator, Researcher, Analyst, Writer

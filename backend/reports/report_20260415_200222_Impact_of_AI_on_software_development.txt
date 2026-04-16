@@ -1,0 +1,21 @@
+RESEARCH REPORT
+============================================================
+Topic:     Impact of AI on software development
+Job ID:    2a0c27fe
+Generated: 2026-04-15 20:02:22
+============================================================
+
+The report concludes with a call for ongoing education to keep pace with AI advancements while recognizing human expertise's irreplaceable role amidst technological integration into software development processes.
+
+--- Report Metadata ---
+Topic:              Impact of AI on software development
+Job ID:             2a0c27fe
+Generated:          2026-04-15 20:02:22
+Model:              llama3.2:3b
+Temperature:        0.3
+Top-K:              default
+Top-P:              default
+Context Window:     4096
+Repeat Penalty:     default
+Confidence Score:   N/A
+Active Agents:      Coordinator, Researcher, Analyst, Writer

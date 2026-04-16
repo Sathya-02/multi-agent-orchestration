@@ -1,0 +1,21 @@
+RESEARCH REPORT
+============================================================
+Topic:     Impact of AI on software development
+Job ID:    4fb3d565
+Generated: 2026-04-15 22:37:56
+============================================================
+
+The report has been structured as per instructions to analyze the impacts of AI in software development with key insights and recommendations derived directly from condensed research data, ensuring a professional tone throughout without any placeholders or decorative markdown elements outside section headers.
+
+--- Report Metadata ---
+Topic:              Impact of AI on software development
+Job ID:             4fb3d565
+Generated:          2026-04-15 22:37:56
+Model:              phi3:mini
+Temperature:        0.3
+Top-K:              default
+Top-P:              default
+Context Window:     4096
+Repeat Penalty:     default
+Confidence Score:   N/A
+Active Agents:      Coordinator, Researcher, Analyst, Writer

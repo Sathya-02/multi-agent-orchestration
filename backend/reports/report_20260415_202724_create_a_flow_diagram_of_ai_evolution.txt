@@ -1,0 +1,21 @@
+RESEARCH REPORT
+============================================================
+Topic:     create a flow diagram of ai evolution
+Job ID:    0cdfb58c
+Generated: 2026-04-15 20:27:24
+============================================================
+
+Agent stopped due to iteration limit or time limit.
+
+--- Report Metadata ---
+Topic:              create a flow diagram of ai evolution
+Job ID:             0cdfb58c
+Generated:          2026-04-15 20:27:24
+Model:              phi3:mini
+Temperature:        0.3
+Top-K:              default
+Top-P:              default
+Context Window:     4096
+Repeat Penalty:     default
+Confidence Score:   N/A
+Active Agents:      Researcher, Analyst, Writer
