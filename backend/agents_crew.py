@@ -2,19 +2,17 @@
 agents_crew.py — Dynamic agent builder + job runner
 
 Fix history:
-  ... (see git log for full history)
- 18. [FIX] DEFAULT_MAX_ITER raised 8 → 15; num_predict raised 512 → 1024;
-     temperature lowered 0.7 → 0.1; added _is_sentinel() guard.
- 19. [FIX] tokens always zero — extract token_usage from CrewAI CrewOutput
-     (result_obj.token_usage → UsageMetrics with prompt_tokens /
-     completion_tokens / total_tokens).  Falls back to total_tokens split
-     50/50 when per-direction counts are unavailable (Ollama backend).
+  19. [FIX] tokens always zero — extract token_usage from CrewAI CrewOutput
+  20. [FIX] ChatOpenAI/OPENAI_API_KEY error when Ollama model selected.
+      crewai==0.51.0 does not have crewai.LLM (added in 0.80+).
+      Now uses ChatOllama from langchain_ollama as the llm= arg.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import time
 import uuid
@@ -25,6 +23,13 @@ from typing import Any, Callable, Optional
 from crewai import Agent, Crew, Process, Task
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Safety net: crewai 0.51 internally imports openai and validates the key
+# even when using Ollama.  Set a dummy value so the validator passes.
+# ---------------------------------------------------------------------------
+if not os.environ.get("OPENAI_API_KEY"):
+    os.environ["OPENAI_API_KEY"] = "sk-dummy-not-used"
 
 # ---------------------------------------------------------------------------
 # Constants / tunables
@@ -80,11 +85,11 @@ def _build_report_text(
         f"Model     : {model}\n"
         f"Agents    : {', '.join(active_labels) or 'n/a'}\n"
         f"Temp      : {temperature}   ctx: {num_ctx}\n"
-        f"{'─' * 60}\n"
+        f"{'-' * 60}\n"
     )
     clean_body = re.sub(r"\n{3,}", "\n\n", body.strip())
     metadata = (
-        f"\n{'─' * 60}\n"
+        f"\n{'-' * 60}\n"
         f"[End of report — job {job_id}]\n"
     )
     return header + "\n" + clean_body + metadata
@@ -110,6 +115,45 @@ def get_llm_config() -> dict:
         }
     except Exception:
         return {"temperature": 0.1, "num_ctx": 4096, "num_predict": 1024}
+
+
+# ---------------------------------------------------------------------------
+# Build a ChatOllama LLM instance (crewai 0.51 uses langchain BaseChatModel)
+# ---------------------------------------------------------------------------
+
+def _build_ollama_llm(model: str, temperature: float, num_ctx: int, num_predict: int):
+    """
+    crewai 0.51.0 accepts any langchain BaseChatModel as the llm= argument.
+    crewai.LLM was only introduced in crewai 0.80+, so we use ChatOllama
+    from langchain_ollama (already in requirements.txt).
+    """
+    ollama_kwargs = dict(
+        model       = model,
+        base_url    = "http://localhost:11434",
+        temperature = temperature,
+        num_ctx     = num_ctx,
+        num_predict = num_predict,
+    )
+
+    # Primary: langchain_ollama (preferred, already pinned in requirements.txt)
+    try:
+        from langchain_ollama import ChatOllama
+        return ChatOllama(**ollama_kwargs)
+    except ImportError:
+        pass
+
+    # Fallback: langchain_community
+    try:
+        from langchain_community.chat_models import ChatOllama  # type: ignore
+        return ChatOllama(**ollama_kwargs)
+    except ImportError:
+        pass
+
+    logger.error(
+        "Neither langchain_ollama nor langchain_community is installed. "
+        "Run: pip install langchain-ollama"
+    )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +341,6 @@ def run_crew(
     Run the CrewAI pipeline and return
     (full_report, report_filename, format, tokens_in, tokens_out).
     """
-    import importlib.util
     import json
 
     generated = datetime.utcnow()
@@ -306,25 +349,20 @@ def run_crew(
     report_dir = report_dir or Path("reports")
     report_dir.mkdir(parents=True, exist_ok=True)
 
-    # ── Load LLM config ──────────────────────────────────────────────────
+    # ── Build Ollama LLM (ChatOllama via langchain_ollama) ─────────────────
     llm_cfg     = get_llm_config()
     temperature = llm_cfg.get("temperature", 0.1)
     num_ctx     = llm_cfg.get("num_ctx", 4096)
     num_predict = llm_cfg.get("num_predict", 1024)
 
-    ollama_base = "http://localhost:11434"
-
-    try:
-        from crewai import LLM
-        llm = LLM(
-            model       = f"ollama/{model}",
-            base_url    = ollama_base,
-            temperature = temperature,
-            num_ctx     = num_ctx,
-            num_predict = num_predict,
+    llm = _build_ollama_llm(model, temperature, num_ctx, num_predict)
+    if llm is None:
+        raise RuntimeError(
+            "Could not build Ollama LLM. "
+            "Ensure langchain-ollama is installed and Ollama is running."
         )
-    except Exception:
-        llm = None  # crewai will use its own default
+
+    logger.info("Using Ollama model: %s  temp=%.2f  ctx=%d", model, temperature, num_ctx)
 
     # ── Load agent definitions ────────────────────────────────────────────
     agents_map: dict[str, Agent] = {}
@@ -344,18 +382,15 @@ def run_crew(
                 goal      = d.get("goal",      DEFAULT_GOAL)
                 backstory = d.get("backstory", DEFAULT_BACKSTORY)
 
-                kw: dict[str, Any] = dict(
+                agents_map[aid] = Agent(
                     role      = role,
                     goal      = goal,
                     backstory = backstory,
+                    llm       = llm,
                     verbose   = DEFAULT_VERBOSE,
                     max_iter  = DEFAULT_MAX_ITER,
                     allow_delegation = False,
                 )
-                if llm is not None:
-                    kw["llm"] = llm
-
-                agents_map[aid] = Agent(**kw)
                 labels_map[aid] = role
             except Exception as exc:
                 logger.warning("Skipping agent file %s: %s", p, exc)
@@ -363,17 +398,15 @@ def run_crew(
     # Fallback: at least one default agent
     if not agents_map:
         default_aid = "researcher"
-        kw = dict(
+        agents_map[default_aid] = Agent(
             role      = "Researcher",
             goal      = f"Research the topic thoroughly: {topic}",
             backstory = "An experienced researcher skilled at finding and synthesising information.",
+            llm       = llm,
             verbose   = DEFAULT_VERBOSE,
             max_iter  = DEFAULT_MAX_ITER,
             allow_delegation = False,
         )
-        if llm is not None:
-            kw["llm"] = llm
-        agents_map[default_aid] = Agent(**kw)
         labels_map[default_aid] = "Researcher"
 
     # ── Build tasks ───────────────────────────────────────────────────────
@@ -391,10 +424,10 @@ def run_crew(
             task_desc += f"\n\nRelevant uploaded files: {', '.join(paths)}"
 
         t = Task(
-            description  = task_desc,
+            description     = task_desc,
             expected_output = f"A thorough, well-structured output from the {label}.",
-            agent        = agent,
-            callback     = _make_task_callback(broadcast_fn, aid, label),
+            agent           = agent,
+            callback        = _make_task_callback(broadcast_fn, aid, label),
         )
         tasks.append(t)
 
@@ -457,12 +490,8 @@ def run_crew(
 
     result_text = str(result_obj) if result_obj else "No output produced."
 
-    # ---- Build report filename: report_YYYYMMDD_HHMMSS_<slug>.txt ----------
-    base_cfg      = get_llm_config()
-    temperature   = base_cfg.get("temperature", 0.1)
-    num_ctx       = base_cfg.get("num_ctx", 4096)
+    # ── Build report ─────────────────────────────────────────────────────
     active_labels = [_label(aid) for aid in ordered_ids if agents_map.get(aid) in agents_with_tasks]
-
     slug            = _topic_slug(topic)
     ts_str          = generated.strftime("%Y%m%d_%H%M%S")
     report_filename = f"report_{ts_str}_{slug}.txt"
@@ -499,7 +528,7 @@ def run_crew(
         if tu is not None:
             t_in  = int(getattr(tu, "prompt_tokens",     0) or 0)
             t_out = int(getattr(tu, "completion_tokens", 0) or 0)
-            # CrewAI UsageMetrics may only expose total_tokens (Ollama backend)
+            # Ollama may only expose total_tokens — split 50/50 as fallback
             if t_in == 0 and t_out == 0:
                 total = int(getattr(tu, "total_tokens", 0) or 0)
                 t_in  = total // 2
