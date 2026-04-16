@@ -20,6 +20,8 @@ import '../../styles/App.css'
 import { useAuth } from '../../auth.jsx'
 import { can } from '../../rbac.js'
 
+const API_URL = window.__API_URL__ || '/api'
+
 export default function SettingsPanel({
   settingsTab, setSettingsTab,
   tgConfig, setTgConfig, tgSaving, tgTesting, tgTestResult, tgBotSet,
@@ -38,7 +40,6 @@ export default function SettingsPanel({
   const [bpText, setBpText] = useState(bestPractices || '')
   const [bpSaving, setBpSaving] = useState(false)
 
-  // keep parent tab state in sync if provided
   const setTab = (t) => { setTabLocal(t); setSettingsTab?.(t) }
 
   useEffect(() => { if (settingsTab) setTabLocal(settingsTab) }, [settingsTab])
@@ -49,6 +50,7 @@ export default function SettingsPanel({
     { key: 'si',        label: '🔬 Self-Improve' },
     { key: 'bp',        label: '📋 Best Practices' },
     { key: 'proposals', label: '💡 Proposals' },
+    { key: 'history',   label: '🧬 Evolution' },
     { key: 'websearch', label: '🔍 Web Search' },
   ]
 
@@ -78,7 +80,7 @@ export default function SettingsPanel({
   const handleSaveBp = async () => {
     setBpSaving(true)
     try {
-      await fetch(`${window.__API_URL__ || '/api'}/self-improver/best-practices`, {
+      await fetch(`${API_URL}/self-improver/best-practices`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ content: bpText }),
@@ -87,27 +89,64 @@ export default function SettingsPanel({
     finally { setBpSaving(false) }
   }
 
-  // ── Proposal helpers ──────────────────────────────────────────────────
+  // ── Structured proposals (loaded from /proposals/pending) ──────────────────
   const [localProposals, setLocalProposals] = useState([])
-  useEffect(() => {
-    if (Array.isArray(proposals)) setLocalProposals(proposals)
-    else if (typeof proposals === 'string') {
-      try { setLocalProposals(JSON.parse(proposals)) } catch { setLocalProposals([]) }
-    }
-  }, [proposals])
+  const [proposalsLoading, setProposalsLoading] = useState(false)
 
-  const handleApprove = async (p) => {
+  const loadPendingProposals = async () => {
+    setProposalsLoading(true)
     try {
-      await fetch(`${window.__API_URL__ || '/api'}/self-improver/proposals/${p.id || p.title}/approve`, { method: 'POST' })
-      setLocalProposals(prev => prev.filter(x => (x.id || x.title) !== (p.id || p.title)))
+      const r = await fetch(`${API_URL}/self-improver/proposals/pending`)
+      if (r.ok) {
+        const d = await r.json()
+        if (Array.isArray(d)) setLocalProposals(d)
+      }
+    } catch {}
+    finally { setProposalsLoading(false) }
+  }
+
+  useEffect(() => {
+    if (tab === 'proposals') loadPendingProposals()
+  }, [tab])
+
+  const handleApprove = async (id) => {
+    try {
+      const r = await fetch(`${API_URL}/self-improver/proposals/${id}/approve`, { method: 'POST' })
+      const d = await r.json()
+      if (d.ok) setLocalProposals(prev => prev.filter(p => p.id !== id))
     } catch {}
   }
-  const handleReject = async (p) => {
+
+  const handleReject = async (id) => {
     try {
-      await fetch(`${window.__API_URL__ || '/api'}/self-improver/proposals/${p.id || p.title}/reject`, { method: 'POST' })
-      setLocalProposals(prev => prev.filter(x => (x.id || x.title) !== (p.id || p.title)))
+      await fetch(`${API_URL}/self-improver/proposals/${id}/reject`, { method: 'POST' })
+      setLocalProposals(prev => prev.filter(p => p.id !== id))
     } catch {}
   }
+
+  // ── Evolution history ──────────────────────────────────────────────────────
+  const [evoHistory, setEvoHistory]     = useState([])
+  const [evoFilter,  setEvoFilter]      = useState('')
+  const [evoLoading, setEvoLoading]     = useState(false)
+
+  const loadEvoHistory = async (agentId = '') => {
+    setEvoLoading(true)
+    try {
+      const url = agentId
+        ? `${API_URL}/self-improver/evolution-history?agent_id=${encodeURIComponent(agentId)}`
+        : `${API_URL}/self-improver/evolution-history`
+      const r = await fetch(url)
+      if (r.ok) {
+        const d = await r.json()
+        if (Array.isArray(d)) setEvoHistory(d.slice().reverse())
+      }
+    } catch {}
+    finally { setEvoLoading(false) }
+  }
+
+  useEffect(() => {
+    if (tab === 'history') loadEvoHistory(evoFilter)
+  }, [tab])
 
   return (
     <div className="overlay-panel settings-panel">
@@ -207,18 +246,18 @@ export default function SettingsPanel({
               onChange={e => canEdit && setSiConfig(p => ({ ...p, interval_hours: +e.target.value }))} />
           </Row>
 
-          <Row label="Max proposals per run" hint="Maximum improvement proposals generated each cycle.">
-            <input className="topic-input" type="number" min={1} max={20}
-              value={siConfig?.max_proposals ?? 5}
-              disabled={!canEdit}
-              onChange={e => canEdit && setSiConfig(p => ({ ...p, max_proposals: +e.target.value }))} />
-          </Row>
-
-          <Row label="Min confidence threshold" hint="Only apply proposals with confidence ≥ this value (0–1).">
+          <Row label="Min confidence threshold" hint="Only process proposals with confidence ≥ this (0–1).">
             <input className="topic-input" type="number" min={0} max={1} step={0.05}
               value={siConfig?.min_confidence ?? 0.7}
               disabled={!canEdit}
               onChange={e => canEdit && setSiConfig(p => ({ ...p, min_confidence: +e.target.value }))} />
+          </Row>
+
+          <Row label="Auto-apply threshold" hint="Confidence ≥ this → SKILLS.md patched immediately without human review.">
+            <input className="topic-input" type="number" min={0} max={1} step={0.01}
+              value={siConfig?.auto_apply_threshold ?? 0.88}
+              disabled={!canEdit}
+              onChange={e => canEdit && setSiConfig(p => ({ ...p, auto_apply_threshold: +e.target.value }))} />
           </Row>
 
           <Row label="Model override" hint="Force a specific model for SI (leave blank to use active model).">
@@ -253,7 +292,6 @@ export default function SettingsPanel({
             </div>
           )}
 
-          {/* Improvement log */}
           {improvLog && (
             <>
               <div style={{ marginTop: 14, marginBottom: 6, fontSize: 12, fontWeight: 600, color: 'var(--tx-secondary)' }}>
@@ -289,34 +327,162 @@ export default function SettingsPanel({
         </div>
       )}
 
-      {/* ═══════════════ PROPOSALS ═══════════════ */}
+      {/* ═══════════════ PROPOSALS (structured human-in-loop) ═══════════════ */}
       {tab === 'proposals' && (
         <div className="settings-body">
           {!canEdit && <ReadonlyBanner />}
 
-          {localProposals.length === 0 ? (
-            <div className="empty-hint">No pending proposals.</div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+            <div style={{ fontSize: 12, color: 'var(--tx-secondary)' }}>
+              Proposals are queued when confidence is 0.70–0.87. High-confidence (≥ 0.88) changes are applied automatically.
+            </div>
+            <button className="agent-action-btn" onClick={loadPendingProposals} disabled={proposalsLoading}
+              style={{ fontSize: 11, padding: '3px 10px' }}>
+              {proposalsLoading ? '⟳' : '↻ Refresh'}
+            </button>
+          </div>
+
+          {proposalsLoading ? (
+            <div style={{ textAlign: 'center', color: 'var(--tx-secondary)', padding: 20 }}>Loading…</div>
+          ) : localProposals.length === 0 ? (
+            <div className="empty-hint">
+              <div style={{ fontSize: 32, marginBottom: 8 }}>🧬</div>
+              No pending evolution proposals.
+              <div style={{ fontSize: 11, color: 'var(--tx-secondary)', marginTop: 4 }}>
+                Proposals appear after each job run when the LLM detects improvement opportunities.
+              </div>
+            </div>
           ) : (
-            localProposals.map((p, i) => (
-              <div key={i} style={styles.proposalCard}>
-                <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
-                  {p.title || `Proposal #${i + 1}`}
+            localProposals.map(p => (
+              <div key={p.id} style={styles.proposalCard}>
+                {/* Header row */}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div>
+                    <span style={{ fontWeight: 700, fontSize: 13 }}>{p.agent_label || p.agent_id}</span>
+                    <span style={{ fontSize: 11, color: 'var(--tx-secondary)', marginLeft: 6 }}>({p.agent_id})</span>
+                  </div>
+                  <div style={{
+                    fontSize: 11, padding: '2px 8px', borderRadius: 12,
+                    background: p.confidence >= 0.85 ? 'rgba(34,197,94,0.12)' : 'rgba(234,179,8,0.12)',
+                    color:      p.confidence >= 0.85 ? '#86efac' : '#fde68a',
+                    fontWeight: 600,
+                  }}>
+                    {((p.confidence || 0) * 100).toFixed(0)}% confidence
+                  </div>
                 </div>
-                {p.description && (
-                  <div style={{ fontSize: 12, color: 'var(--tx-secondary)', whiteSpace: 'pre-wrap', marginBottom: 8 }}>
-                    {p.description}
+
+                {/* Fields being patched */}
+                <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginTop: 6 }}>
+                  {Object.keys(p.patches || {}).map(f => (
+                    <span key={f} style={{
+                      fontSize: 10, padding: '1px 7px', borderRadius: 9,
+                      background: 'rgba(99,102,241,0.15)', color: '#c4b5fd',
+                    }}>{f}</span>
+                  ))}
+                </div>
+
+                {/* Reason */}
+                <div style={{ fontSize: 12, color: 'var(--tx-secondary)', marginTop: 6 }}>
+                  {p.reason}
+                </div>
+
+                {/* Diff preview per field */}
+                {Object.entries(p.patches || {}).map(([field, val]) => (
+                  <details key={field} style={{ marginTop: 6 }}>
+                    <summary style={{ fontSize: 11, cursor: 'pointer', color: 'var(--tx-secondary)', userSelect: 'none' }}>
+                      📄 View proposed <strong>{field}</strong>
+                    </summary>
+                    <pre style={{
+                      fontSize: 10, marginTop: 4, padding: '6px 10px', borderRadius: 5,
+                      background: 'rgba(0,0,0,0.25)', whiteSpace: 'pre-wrap', overflowX: 'auto',
+                      color: '#e2e8f0',
+                    }}>{typeof val === 'object' ? JSON.stringify(val, null, 2) : val}</pre>
+                  </details>
+                ))}
+
+                {/* Job context */}
+                {p.job_context?.topic && (
+                  <div style={{ fontSize: 10, color: 'var(--tx-secondary)', marginTop: 5 }}>
+                    🎯 Triggered by: "{String(p.job_context.topic).slice(0, 60)}"
                   </div>
                 )}
-                {p.confidence !== undefined && (
-                  <div style={{ fontSize: 11, color: 'var(--tx-secondary)', marginBottom: 6 }}>
-                    Confidence: {(p.confidence * 100).toFixed(0)}%
-                  </div>
-                )}
+
+                {/* Trigger + timestamp */}
+                <div style={{ fontSize: 10, color: 'var(--tx-secondary)', marginTop: 2 }}>
+                  {p.trigger} · {p.created_at ? new Date(p.created_at).toLocaleString() : ''}
+                </div>
+
+                {/* Action buttons */}
                 {canEdit && (
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    <button className="agent-action-btn" onClick={() => handleApprove(p)}>✅ Approve</button>
-                    <button className="agent-action-btn danger" onClick={() => handleReject(p)}>✕ Reject</button>
+                  <div style={{ display: 'flex', gap: 8, marginTop: 10 }}>
+                    <button className="run-btn"
+                      style={{ fontSize: 12, padding: '4px 14px', background: 'rgba(34,197,94,0.15)' }}
+                      onClick={() => handleApprove(p.id)}>
+                      ✅ Approve &amp; Apply to SKILLS.md
+                    </button>
+                    <button className="agent-action-btn danger"
+                      style={{ fontSize: 12 }}
+                      onClick={() => handleReject(p.id)}>
+                      ✕ Reject
+                    </button>
                   </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+
+      {/* ═══════════════ EVOLUTION HISTORY ═══════════════ */}
+      {tab === 'history' && (
+        <div className="settings-body">
+          <div style={{ display: 'flex', gap: 8, marginBottom: 10, alignItems: 'center' }}>
+            <input className="topic-input" style={{ flex: 1 }}
+              value={evoFilter}
+              onChange={e => setEvoFilter(e.target.value)}
+              placeholder="Filter by agent ID (leave blank for all)" />
+            <button className="run-btn" style={{ fontSize: 12, padding: '4px 12px' }}
+              onClick={() => loadEvoHistory(evoFilter)} disabled={evoLoading}>
+              {evoLoading ? '⟳' : '🔍 Load'}
+            </button>
+          </div>
+
+          {evoLoading ? (
+            <div style={{ textAlign: 'center', color: 'var(--tx-secondary)', padding: 20 }}>Loading…</div>
+          ) : evoHistory.length === 0 ? (
+            <div className="empty-hint">
+              <div style={{ fontSize: 28, marginBottom: 6 }}>📜</div>
+              No evolution history yet.
+              <div style={{ fontSize: 11, color: 'var(--tx-secondary)', marginTop: 4 }}>
+                History records appear after each SKILLS.md change — auto-applied or human-approved.
+              </div>
+            </div>
+          ) : (
+            evoHistory.map((h, i) => (
+              <div key={i} style={{ ...styles.proposalCard, marginBottom: 6 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <span style={{ fontWeight: 600, fontSize: 12 }}>{h.agent_id}</span>
+                    <span style={{
+                      fontSize: 10, marginLeft: 8, padding: '1px 7px', borderRadius: 9,
+                      background: h.source === 'human_approved'
+                        ? 'rgba(34,197,94,0.12)' : 'rgba(99,102,241,0.12)',
+                      color: h.source === 'human_approved' ? '#86efac' : '#c4b5fd',
+                    }}>{h.source === 'human_approved' ? '✅ human approved' : '🤖 auto-applied'}</span>
+                  </div>
+                  <div style={{ fontSize: 10, color: 'var(--tx-secondary)' }}>
+                    {h.ts ? new Date(h.ts).toLocaleString() : ''}
+                  </div>
+                </div>
+                <div style={{ fontSize: 11, marginTop: 4 }}>
+                  <strong style={{ color: '#c4b5fd' }}>{h.field}</strong>
+                  <span style={{ color: 'var(--tx-secondary)', marginLeft: 8 }}>{h.reason?.slice(0, 120)}</span>
+                </div>
+                {h.snippet && (
+                  <div style={{
+                    fontSize: 10, marginTop: 4, padding: '4px 8px', borderRadius: 4,
+                    background: 'rgba(0,0,0,0.2)', color: '#e2e8f0', whiteSpace: 'pre-wrap',
+                  }}>{h.snippet.slice(0, 200)}</div>
                 )}
               </div>
             ))
@@ -393,7 +559,6 @@ export default function SettingsPanel({
             </div>
           )}
 
-          {/* Live query test */}
           <div style={{ marginTop: 14 }}>
             <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>🔎 Test a query</div>
             <div style={{ display: 'flex', gap: 8 }}>
@@ -433,7 +598,7 @@ const styles = {
     fontSize: 11, color: 'var(--tx-secondary)', marginBottom: 2,
   },
   proposalCard: {
-    padding: '10px 12px', borderRadius: 8, marginBottom: 8,
+    padding: '10px 14px', borderRadius: 8, marginBottom: 10,
     background: 'rgba(255,255,255,0.03)', border: '1px solid var(--bd-subtle)',
   },
 }

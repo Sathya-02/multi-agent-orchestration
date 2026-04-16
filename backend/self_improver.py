@@ -1,63 +1,86 @@
 """
-self_improver.py — Autonomous System Self-Improvement
+self_improver.py — Autonomous Agent Evolution with Human-in-Loop
 
-Runs in two modes:
-  1. SCHEDULED — background thread fires every interval_hours
-  2. PER-RUN   — triggered automatically after each job completes
-     (debounced: min 5 minutes between cycles)
+Evolution pipeline:
+  1. After each job (debounced) OR on schedule:
+     - Reads each agent's SKILLS.md + recent job activity + evolution lineage
+     - Asks LLM to evaluate and suggest patches (goal/backstory/max_iter/tools)
+  2. confidence >= 0.88 + safe_to_auto_apply → patch SKILLS.md immediately
+     confidence 0.70-0.87              → queue as structured JSON proposal
+  3. UI shows pending proposals; human clicks Approve or Reject
+     Approve → _apply_skills_patch() writes SKILLS.md + updates agent registry
+     Reject  → logged with reason; agent never re-suggested same change
+  4. Every change (auto or human) appended to evolution_history.json
+     → fed back into next LLM prompt as lineage context
 
-On each cycle it:
-  1. Reads all SKILLS.md and TOOL.md files
-  2. Reads the last N job activity logs (from a rolling log file)
-  3. Reads the current BEST_PRACTICES.md
-  4. Asks the LLM (via Ollama) to:
-       a) Identify patterns in recent job failures or weak outputs
-       b) Suggest improvements to agent goals/backstories
-       c) Suggest improvements to tool descriptions
-       d) Update BEST_PRACTICES.md with new learnings
-  5. Applies non-destructive improvements (description updates) automatically
-  6. Writes bigger structural suggestions to IMPROVEMENT_PROPOSALS.md
-     for human review
-  7. Broadcasts improvements via WebSocket so the UI shows them
-
-The service never deletes anything — only appends and rewrites descriptions.
-All changes are logged in IMPROVEMENT_LOG.md.
+Legacy features preserved:
+  - BEST_PRACTICES.md update each cycle
+  - Tool description improvements
+  - IMPROVEMENT_LOG.md + IMPROVEMENT_PROPOSALS.md (legacy flat files)
+  - Telegram notification
+  - Background scheduler + per-run debounced trigger
 """
-import json, logging, re, threading, time
+import hashlib
+import json
+import logging
+import re
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger("self_improver")
 
-BASE_DIR            = Path(__file__).parent
-BEST_PRACTICES_PATH = BASE_DIR / "BEST_PRACTICES.md"
-PROPOSALS_PATH      = BASE_DIR / "IMPROVEMENT_PROPOSALS.md"
-IMPROVEMENT_LOG     = BASE_DIR / "IMPROVEMENT_LOG.md"
-ACTIVITY_LOG_PATH   = BASE_DIR / "activity_log.jsonl"
-CONFIG_PATH         = BASE_DIR / "self_improver_config.json"
+BASE_DIR             = Path(__file__).parent
+BEST_PRACTICES_PATH  = BASE_DIR / "BEST_PRACTICES.md"
+PROPOSALS_PATH       = BASE_DIR / "IMPROVEMENT_PROPOSALS.md"   # legacy flat file
+IMPROVEMENT_LOG      = BASE_DIR / "IMPROVEMENT_LOG.md"
+ACTIVITY_LOG_PATH    = BASE_DIR / "activity_log.jsonl"
+CONFIG_PATH          = BASE_DIR / "self_improver_config.json"
+PROPOSALS_JSON       = BASE_DIR / "proposals_pending.json"     # structured store
+EVOLUTION_HISTORY    = BASE_DIR / "evolution_history.json"     # lineage
 
 _DEFAULT_CONFIG = {
     "enabled":              True,
-    "interval_hours":       6,          # scheduled run every N hours
-    "run_trigger":          True,       # also trigger after every job
-    "run_trigger_debounce": 300,        # min seconds between per-run cycles
+    "interval_hours":       6,
+    "run_trigger":          True,
+    "run_trigger_debounce": 300,
     "max_activity_entries": 50,
     "auto_apply_safe":      True,
     "notify_telegram":      True,
     "model_override":       "",
     "min_confidence":       0.7,
+    "auto_apply_threshold": 0.88,   # confidence floor for immediate SKILLS.md write
 }
 
-_config: dict    = {}
-_lock            = threading.Lock()   # prevents concurrent cycles
-_thread: Optional[threading.Thread] = None
-_last_cycle_ts: float = 0.0           # epoch of last completed cycle
+_config:        dict = {}
+_lock           = threading.Lock()
+_thread:        Optional[threading.Thread] = None
+_last_cycle_ts: float = 0.0
+_broadcast_fn:  Optional[Callable] = None
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Broadcast injection
+# ─────────────────────────────────────────────────────────────────────────────
+
+def set_broadcast_fn(fn: Callable) -> None:
+    global _broadcast_fn
+    _broadcast_fn = fn
+
+
+def _broadcast(msg: dict) -> None:
+    if _broadcast_fn:
+        try:
+            _broadcast_fn(msg)
+        except Exception:
+            pass
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Config
-# ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 def load_config() -> dict:
     global _config
@@ -78,43 +101,226 @@ def save_config(cfg: dict) -> None:
     CONFIG_PATH.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# Activity log writer (called from main.py after each job)
-# ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Structured proposals store
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_proposals() -> list:
+    if PROPOSALS_JSON.exists():
+        try:
+            return json.loads(PROPOSALS_JSON.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def _save_proposals(proposals: list) -> None:
+    PROPOSALS_JSON.write_text(json.dumps(proposals, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def get_pending_proposals() -> list:
+    return [p for p in _load_proposals() if p.get("status") == "pending"]
+
+
+def get_all_proposals() -> list:
+    return _load_proposals()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Evolution history (lineage)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_history() -> list:
+    if EVOLUTION_HISTORY.exists():
+        try:
+            return json.loads(EVOLUTION_HISTORY.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+    return []
+
+
+def _append_history(entry: dict) -> None:
+    history = _load_history()
+    history.append(entry)
+    if len(history) > 500:
+        history = history[-500:]
+    EVOLUTION_HISTORY.write_text(json.dumps(history, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def get_evolution_history(agent_id: Optional[str] = None) -> list:
+    history = _load_history()
+    if agent_id:
+        return [h for h in history if h.get("agent_id") == agent_id]
+    return history
+
+
+def _gather_evolution_context(agent_id: str) -> str:
+    """Return a human-readable summary of the last 5 changes for this agent."""
+    entries = [h for h in _load_history() if h.get("agent_id") == agent_id][-5:]
+    if not entries:
+        return "No previous evolution changes recorded for this agent."
+    lines = []
+    for e in entries:
+        ts     = e.get("ts", "?")
+        field  = e.get("field", "?")
+        reason = e.get("reason", "")[:120]
+        src    = e.get("source", "?")   # auto_applied | human_approved
+        lines.append(f"  [{ts}] {field} changed ({src}): {reason}")
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SKILLS.md patch engine
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _patch_skills_yaml(current_text: str, patches: dict) -> str:
+    """
+    Apply field patches to SKILLS.md text.
+    patches = {"goal": "new text", "backstory": "new text", "max_iter": 5}
+    Preserves all unrelated content; appends evolution timestamp at end.
+    """
+    result = current_text
+    for field, new_value in patches.items():
+        if field == "max_iter":
+            result = re.sub(r"(max_iter\s*:\s*)\d+", f"\\g<1>{new_value}", result)
+
+        elif field in ("goal", "backstory", "role"):
+            new_lines = "\n".join(f"  {ln}" for ln in str(new_value).strip().splitlines())
+            block_pat = re.compile(
+                rf"^([ \t]*{re.escape(field)}\s*:\s*[>|]?\s*\n)((?:[ \t]+.+\n?)*)",
+                re.MULTILINE,
+            )
+            if block_pat.search(result):
+                result = block_pat.sub(f"\\g<1>{new_lines}\n", result, count=1)
+            else:
+                result += f"\n{field}: >\n{new_lines}\n"
+
+        elif field == "tools" and isinstance(new_value, list):
+            tools_block = "tools:\n" + "\n".join(f"  - {t}" for t in new_value) + "\n"
+            tools_pat   = re.compile(r"^tools\s*:\s*\n((?:[ \t]+.+\n?)*)", re.MULTILINE)
+            if tools_pat.search(result):
+                result = tools_pat.sub(tools_block, result, count=1)
+            else:
+                result += f"\n{tools_block}"
+
+    # Append / refresh evolution stamp
+    ts     = datetime.now().strftime("%Y-%m-%d %H:%M")
+    result = re.sub(r"\n# \[evolved .*?\]\n?", "", result)
+    result = result.rstrip() + f"\n# [evolved {ts} by self-improver]\n"
+    return result
+
+
+def _apply_skills_patch(agent_id: str, patches: dict, reason: str, source: str) -> bool:
+    """
+    Write patches into the agent's SKILLS.md and update the agent registry.
+    source: 'auto_applied' | 'human_approved'
+    """
+    try:
+        from agent_registry import AGENTS_DIR, update_agent, get_agent
+    except Exception as e:
+        logger.warning(f"_apply_skills_patch: agent_registry import failed: {e}")
+        return False
+
+    skills_path = AGENTS_DIR / agent_id / "SKILLS.md"
+    current     = skills_path.read_text(encoding="utf-8") if skills_path.exists() else ""
+    patched     = _patch_skills_yaml(current, patches)
+    skills_path.parent.mkdir(parents=True, exist_ok=True)
+    skills_path.write_text(patched, encoding="utf-8")
+
+    # Also mirror scalar fields into the agent registry JSON
+    registry_fields = {k: v for k, v in patches.items() if k in ("goal", "backstory", "role")}
+    if registry_fields:
+        try:
+            update_agent(agent_id, registry_fields)
+        except Exception as e:
+            logger.warning(f"Registry update failed for {agent_id}: {e}")
+
+    # Record lineage
+    for field, val in patches.items():
+        _append_history({
+            "ts":       datetime.now().isoformat(),
+            "agent_id": agent_id,
+            "field":    field,
+            "reason":   reason,
+            "source":   source,
+            "snippet":  str(val)[:200],
+        })
+
+    logger.info(f"SKILLS.md patched for agent '{agent_id}' ({source}): {list(patches.keys())}")
+    return True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Human-in-loop: approve / reject
+# ─────────────────────────────────────────────────────────────────────────────
+
+def approve_proposal(proposal_id: str) -> dict:
+    proposals = _load_proposals()
+    prop      = next((p for p in proposals if p["id"] == proposal_id), None)
+    if not prop:
+        return {"error": "proposal not found"}
+    if prop.get("status") != "pending":
+        return {"error": f"proposal already {prop.get('status')}"}
+
+    ok = _apply_skills_patch(
+        prop["agent_id"],
+        prop["patches"],
+        prop["reason"],
+        "human_approved",
+    )
+    prop["status"]      = "approved"
+    prop["approved_ts"] = datetime.now().isoformat()
+    _save_proposals(proposals)
+
+    _broadcast({"type": "agents_updated"})
+    _broadcast({
+        "type":        "si_proposal_applied",
+        "agent":       prop["agent_id"],
+        "patches":     list(prop["patches"].keys()),
+        "proposal_id": proposal_id,
+    })
+
+    return {"ok": ok, "applied": [f"{prop['agent_id']}: {list(prop['patches'].keys())}"]}
+
+
+def reject_proposal(proposal_id: str, reason: str = "") -> dict:
+    proposals = _load_proposals()
+    prop      = next((p for p in proposals if p["id"] == proposal_id), None)
+    if not prop:
+        return {"error": "proposal not found"}
+    prop["status"]       = "rejected"
+    prop["rejected_ts"]  = datetime.now().isoformat()
+    prop["reject_reason"]= reason
+    _save_proposals(proposals)
+    logger.info(f"Proposal {proposal_id} rejected. Reason: {reason}")
+    return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Activity log
+# ─────────────────────────────────────────────────────────────────────────────
 
 def log_activity(event: dict) -> None:
-    """
-    Append a job event to the rolling activity log.
-    If run_trigger is enabled, also fire an improvement cycle
-    (debounced by run_trigger_debounce seconds).
-    """
     global _last_cycle_ts
     try:
         with open(ACTIVITY_LOG_PATH, "a", encoding="utf-8") as f:
             f.write(json.dumps(event) + "\n")
-        # Trim to last 500 lines
         lines = ACTIVITY_LOG_PATH.read_text(encoding="utf-8").splitlines()
         if len(lines) > 500:
             ACTIVITY_LOG_PATH.write_text("\n".join(lines[-500:]) + "\n", encoding="utf-8")
     except Exception as e:
         logger.warning(f"Activity log write failed: {e}")
 
-    # ── Per-run trigger ──────────────────────────────────────────────────
     cfg = _config or load_config()
-    if not cfg.get("run_trigger", True):
-        return
-    if not cfg.get("enabled", True):
+    if not cfg.get("run_trigger", True) or not cfg.get("enabled", True):
         return
     debounce = int(cfg.get("run_trigger_debounce", 300))
     if time.time() - _last_cycle_ts < debounce:
-        logger.debug("Self-improver debounce: skipping per-run trigger")
         return
 
-    # Fire in background — pass the triggering event as run context
     def _run():
         global _last_cycle_ts
         if not _lock.acquire(blocking=False):
-            logger.debug("Self-improver busy: skipping per-run trigger")
             return
         try:
             _last_cycle_ts = time.time()
@@ -123,18 +329,17 @@ def log_activity(event: dict) -> None:
             if cfg.get("notify_telegram"):
                 _notify_telegram(results)
         except Exception as e:
-            logger.exception(f"Per-run improvement cycle failed: {e}")
+            logger.exception(f"Per-run cycle failed: {e}")
         finally:
             _lock.release()
 
-    t = threading.Thread(target=_run, daemon=True, name="self-improver-per-run")
-    t.start()
+    threading.Thread(target=_run, daemon=True, name="si-per-run").start()
 
 
 def _read_recent_activity(n: int = 50) -> list:
     if not ACTIVITY_LOG_PATH.exists():
         return []
-    lines = ACTIVITY_LOG_PATH.read_text(encoding="utf-8").splitlines()
+    lines  = ACTIVITY_LOG_PATH.read_text(encoding="utf-8").splitlines()
     recent = []
     for line in lines[-n:]:
         try:
@@ -144,70 +349,58 @@ def _read_recent_activity(n: int = 50) -> list:
     return recent
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Context gathering
-# ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _gather_agent_context() -> str:
-    """Read all SKILLS.md files and return a summary."""
     from agent_registry import AGENTS_DIR, get_all_agents
     sections = []
     for agent in get_all_agents():
         aid = agent["id"]
         p   = AGENTS_DIR / aid / "SKILLS.md"
-        if p.exists():
-            sections.append(f"### Agent: {agent['role']} ({aid})\n{p.read_text(encoding='utf-8')}")
-        else:
-            sections.append(f"### Agent: {agent['role']} ({aid})\n[No SKILLS.md]")
+        txt = p.read_text(encoding="utf-8") if p.exists() else "[No SKILLS.md]"
+        sections.append(f"### Agent: {agent.get('role', aid)} ({aid})\n{txt}")
     return "\n\n".join(sections)
 
 
 def _gather_tool_context() -> str:
-    """Read all TOOL.md files and return a summary."""
     from tool_registry import TOOLS_DIR, get_all_tools
     sections = []
     for tool in get_all_tools():
         if tool.get("builtin"):
             sections.append(
                 f"### Tool: {tool.get('display_name', tool['name'])} ({tool['id']}) [built-in]\n"
-                f"Description: {tool.get('description','')}"
+                f"Description: {tool.get('description', '')}"
             )
         else:
             tid = tool["id"]
             p   = TOOLS_DIR / tid / "TOOL.md"
-            if p.exists():
-                sections.append(f"### Tool: {tool.get('display_name', tool['name'])} ({tid}) [custom]\n{p.read_text(encoding='utf-8')}")
+            txt = p.read_text(encoding="utf-8") if p.exists() else "[No TOOL.md]"
+            sections.append(f"### Tool: {tool.get('display_name', tool['name'])} ({tid}) [custom]\n{txt}")
     return "\n\n".join(sections)
 
 
 def _read_best_practices() -> str:
-    if BEST_PRACTICES_PATH.exists():
-        return BEST_PRACTICES_PATH.read_text(encoding="utf-8")
-    return ""
+    return BEST_PRACTICES_PATH.read_text(encoding="utf-8") if BEST_PRACTICES_PATH.exists() else ""
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # LLM call
-# ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _call_llm(prompt: str) -> str:
-    """Call Ollama with the given prompt and return the response text."""
     from model_config import get_active_model
     try:
         import requests as req
         model   = _config.get("model_override") or get_active_model()
         payload = {
-            "model":  model,
-            "prompt": prompt,
-            "stream": False,
-            # temperature 0.55 — enough variety to generate fresh insights
-            # on each run without going off-rails
-            "options": {"num_predict": 1200, "temperature": 0.55},
+            "model":   model,
+            "prompt":  prompt,
+            "stream":  False,
+            "options": {"num_predict": 1400, "temperature": 0.5},
         }
-        resp = req.post(
-            "http://localhost:11434/api/generate",
-            json=payload, timeout=120,
-        )
+        resp = req.post("http://localhost:11434/api/generate", json=payload, timeout=120)
         if resp.status_code == 200:
             return resp.json().get("response", "").strip()
         return f"[LLM error: HTTP {resp.status_code}]"
@@ -215,170 +408,202 @@ def _call_llm(prompt: str) -> str:
         return f"[LLM call failed: {e}]"
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# Core improvement logic
-# ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-agent evolution (new)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _evolve_agents(activity_summary: str, trigger: str, run_context: Optional[dict]) -> dict:
+    """
+    Evaluate each agent individually and generate targeted SKILLS.md patches.
+    Returns {"changes": [...], "proposals": [...]} for the summary log.
+    """
+    changes   = []
+    proposals = []
+    threshold = float(_config.get("auto_apply_threshold", 0.88))
+    min_conf  = float(_config.get("min_confidence", 0.7))
+
+    try:
+        from agent_registry import AGENTS_DIR, get_all_agents
+    except Exception as e:
+        logger.warning(f"_evolve_agents: cannot import agent_registry: {e}")
+        return {"changes": changes, "proposals": proposals}
+
+    for agent in get_all_agents():
+        aid   = agent["id"]
+        label = agent.get("role", aid)
+        sp    = AGENTS_DIR / aid / "SKILLS.md"
+        current_skills = sp.read_text(encoding="utf-8") if sp.exists() else "[No SKILLS.md]"
+        lineage        = _gather_evolution_context(aid)
+
+        evo_prompt = (
+            f"You are an AI agent evolution engine.\n"
+            f"\nAGENT: {label} (id={aid})"
+            f"\nCURRENT SKILLS.md:\n{current_skills}"
+            f"\nRECENT JOB PERFORMANCE:\n{activity_summary}"
+            f"\nEVOLUTION LINEAGE (previous changes to this agent):\n{lineage}"
+            f"\n\nYour task: analyse whether this agent's SKILLS.md should be updated"
+            f" based on the job performance evidence above."
+            f"\n\nOutput ONLY a JSON object with these keys:"
+            f"\n{{\"patches\": {{\"goal\": \"new text\"}}, \"reason\": \"evidence-based reason\","
+            f" \"confidence\": 0.0, \"safe_to_auto_apply\": true}}"
+            f"\n\nRules:"
+            f"\n- confidence is 0.0-1.0; be conservative (most runs → 0.5-0.7)"
+            f"\n- safe_to_auto_apply=true only for goal/backstory/max_iter with confidence >= {threshold}"
+            f"\n- If no change is needed output: {{\"patches\": {{}}, \"confidence\": 0, \"reason\": \"no change needed\"}}"
+            f"\n- Do NOT suggest the same change already in the lineage"
+            f"\nOutput ONLY JSON."
+        )
+
+        resp = _call_llm(evo_prompt)
+        sug  = _parse_json_obj(resp)
+        if not isinstance(sug, dict) or not sug.get("patches"):
+            continue
+
+        patches = sug["patches"]
+        conf    = float(sug.get("confidence", 0))
+        safe    = bool(sug.get("safe_to_auto_apply", False))
+        reason  = sug.get("reason", "")
+
+        if conf < min_conf:
+            continue
+
+        if safe and conf >= threshold and _config.get("auto_apply_safe", True):
+            # ── Auto-apply immediately ────────────────────────────────────
+            ok = _apply_skills_patch(aid, patches, reason, "auto_applied")
+            if ok:
+                changes.append(f"Agent '{aid}' SKILLS.md auto-patched (conf={conf:.0%}): {list(patches.keys())}")
+                _broadcast({
+                    "type":    "agent_activity",
+                    "agent":   "system",
+                    "label":   "🧬 Self-Improver",
+                    "message": f"✅ Auto-evolved agent '{label}': {list(patches.keys())} (conf={conf:.0%})",
+                    "ts":      time.time(),
+                })
+        else:
+            # ── Queue as pending human-review proposal ────────────────────
+            prop_id = hashlib.sha1(
+                f"{aid}{reason}{datetime.now().isoformat()}".encode()
+            ).hexdigest()[:8]
+
+            current_snap = sp.read_text(encoding="utf-8") if sp.exists() else ""
+            proposal = {
+                "id":                      prop_id,
+                "created_at":              datetime.now().isoformat(),
+                "agent_id":                aid,
+                "agent_label":             label,
+                "patches":                 patches,
+                "reason":                  reason,
+                "confidence":              conf,
+                "trigger":                 trigger,
+                "job_context":             {
+                    "job_id": run_context.get("job_id", "") if run_context else "",
+                    "topic":  run_context.get("topic",  "") if run_context else "",
+                },
+                "current_skills_snapshot": current_snap,
+                "status":                  "pending",
+            }
+            existing = _load_proposals()
+            existing.append(proposal)
+            _save_proposals(existing)
+            proposals.append(f"AGENT {aid} (conf={conf:.0%}): {reason[:100]}")
+
+            _broadcast({
+                "type":    "si_proposal_queued",
+                "agent":   aid,
+                "label":   label,
+                "fields":  list(patches.keys()),
+                "conf":    conf,
+                "id":      prop_id,
+            })
+
+    return {"changes": changes, "proposals": proposals}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core improvement cycle
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _run_improvement_cycle(run_context: Optional[dict] = None) -> dict:
-    """
-    Execute one full improvement cycle.
-
-    run_context: the specific job event that triggered this cycle
-                 (None when called from the scheduler).
-    Returns a summary dict.
-    """
     ts      = datetime.now().strftime("%Y-%m-%d %H:%M")
-    trigger = "scheduled"
+    trigger = "per-run" if run_context else "scheduled"
     run_ctx_str = ""
 
     if run_context:
-        trigger = "per-run"
-        job_id  = run_context.get("job_id", "unknown")
-        topic   = run_context.get("topic", "unknown")[:80]
-        status  = run_context.get("status", "unknown")
-        model   = run_context.get("model", "unknown")
+        job_id   = run_context.get("job_id", "unknown")
+        topic    = run_context.get("topic",  "unknown")[:80]
+        status   = run_context.get("status", "unknown")
+        model    = run_context.get("model",  "unknown")
         duration = run_context.get("duration_secs", "?")
         run_ctx_str = (
-            f"\n\nTRIGGERING JOB (the run that just completed):\n"
-            f"  Job ID:   {job_id}\n"
-            f"  Topic:    {topic}\n"
-            f"  Status:   {status}\n"
-            f"  Model:    {model}\n"
-            f"  Duration: {duration}s\n"
-            f"Focus your analysis on what this specific job reveals about system performance."
+            f"\n\nTRIGGERING JOB:\n"
+            f"  Job ID: {job_id}\n  Topic: {topic}\n"
+            f"  Status: {status}\n  Model: {model}\n  Duration: {duration}s"
         )
 
     logger.info(f"Self-improvement cycle [{trigger}] starting at {ts}")
-    results = {"ts": ts, "trigger": trigger, "changes": [], "proposals": [],
-               "best_practices_updated": False}
+    results = {
+        "ts": ts, "trigger": trigger,
+        "changes": [], "proposals": [],
+        "best_practices_updated": False,
+    }
 
-    activity   = _read_recent_activity(_config.get("max_activity_entries", 50))
-    agent_ctx  = _gather_agent_context()
-    tool_ctx   = _gather_tool_context()
-    best_prac  = _read_best_practices()
+    activity  = _read_recent_activity(_config.get("max_activity_entries", 50))
+    agent_ctx = _gather_agent_context()
+    tool_ctx  = _gather_tool_context()
+    best_prac = _read_best_practices()
 
-    # ── Step 1: Summarise recent activity ────────────────────────────────
+    # Activity summary string
     if activity:
         lines = []
         for ev in activity[-20:]:
-            job_id   = ev.get("job_id", "?")
-            topic    = ev.get("topic", "?")[:60]
-            status   = ev.get("status", "?")
-            model    = ev.get("model", "?")
-            duration = ev.get("duration_secs", "?")
-            lines.append(f"- Job {job_id}: {status} | '{topic}' | model={model} | {duration}s")
+            lines.append(
+                f"- Job {ev.get('job_id','?')}: {ev.get('status','?')} | "
+                f"'{ev.get('topic','?')[:60]}' | model={ev.get('model','?')} | "
+                f"{ev.get('duration_secs','?')}s"
+            )
         activity_summary = "\n".join(lines)
     else:
         activity_summary = "No recent activity recorded yet."
 
-    # ── Step 2: Best practices update ────────────────────────────────────
+    # ── 1. Best practices ────────────────────────────────────────────────────
     bp_prompt = (
         f"You are a self-improvement AI for a multi-agent research platform.\n"
-        f"Cycle type: {trigger.upper()} | Timestamp: {ts}"
-        f"{run_ctx_str}\n\n"
+        f"Cycle type: {trigger.upper()} | Timestamp: {ts}{run_ctx_str}\n\n"
         f"CURRENT BEST PRACTICES:\n{best_prac or 'None documented yet.'}\n\n"
-        f"RECENT JOB ACTIVITY (last 20 jobs):\n{activity_summary}\n\n"
-        f"ACTIVE AGENTS:\n{agent_ctx[:2000]}\n\n"
-        f"ACTIVE TOOLS:\n{tool_ctx[:1500]}\n\n"
+        f"RECENT JOB ACTIVITY:\n{activity_summary}\n\n"
         f"Your task:\n"
-        f"1. Review the triggering job and recent activity for NEW patterns not yet in best practices.\n"
-        f"2. Identify 2-4 SPECIFIC, ACTIONABLE best practices based on what you observe RIGHT NOW.\n"
-        f"3. Do NOT repeat existing best practices verbatim — evolve or extend them.\n"
-        f"4. Note model performance patterns relevant to the task types seen.\n\n"
-        f"Output a BEST PRACTICES document in Markdown. Start with:\n"
+        f"1. Identify 2-4 SPECIFIC, ACTIONABLE best practices from the evidence above.\n"
+        f"2. Do NOT repeat existing ones verbatim — evolve or extend them.\n"
+        f"Output a Markdown document starting with:\n"
         f"# Best Practices — Multi-Agent Orchestration\n"
-        f"## Last updated: {ts} ({trigger} cycle)\n\n"
-        f"Write numbered best practice sections. Be specific. Max 800 words."
+        f"## Last updated: {ts} ({trigger} cycle)\n\nMax 800 words."
     )
-
     bp_response = _call_llm(bp_prompt)
     if bp_response and not bp_response.startswith("[LLM"):
         BEST_PRACTICES_PATH.write_text(bp_response, encoding="utf-8")
         results["best_practices_updated"] = True
         logger.info("BEST_PRACTICES.md updated.")
 
-    # ── Step 3: Agent improvement suggestions ────────────────────────────
-    agent_prompt = (
-        f"You are reviewing AI agent definitions for a multi-agent research system.\n"
-        f"Cycle triggered by: {trigger.upper()} at {ts}"
-        f"{run_ctx_str}\n\n"
-        f"AGENTS:\n{agent_ctx[:3000]}\n\n"
-        f"RECENT JOB ACTIVITY:\n{activity_summary}\n\n"
-        f"For each agent, evaluate:\n"
-        f"- Is the goal specific enough for the task type just seen?\n"
-        f"- Does the backstory motivate behaviour needed for this topic domain?\n"
-        f"- Are tool assignments appropriate?\n\n"
-        f"Output a JSON array of improvement suggestions:\n"
-        f'[{{\n'
-        f'  "agent_id": "researcher",\n'
-        f'  "field": "goal",\n'
-        f'  "current": "current text snippet",\n'
-        f'  "suggested": "improved text",\n'
-        f'  "reason": "why this is better given the recent run",\n'
-        f'  "confidence": 0.0,\n'
-        f'  "safe_to_auto_apply": true\n'
-        f'}}]\n\n'
-        f"Only include HIGH-CONFIDENCE (>0.8) improvements. Output ONLY the JSON array."
-    )
+    # ── 2. Per-agent evolution (NEW) ─────────────────────────────────────────
+    evo = _evolve_agents(activity_summary, trigger, run_context)
+    results["changes"]  += evo["changes"]
+    results["proposals"] += evo["proposals"]
 
-    agent_response   = _call_llm(agent_prompt)
-    agent_suggestions = _parse_json_response(agent_response)
-    if isinstance(agent_suggestions, list):
-        min_conf = _config.get("min_confidence", 0.7)
-        for sug in agent_suggestions:
-            if not isinstance(sug, dict):
-                continue
-            aid    = sug.get("agent_id", "")
-            field  = sug.get("field", "")
-            val    = sug.get("suggested", "")
-            conf   = float(sug.get("confidence", 0))
-            safe   = sug.get("safe_to_auto_apply", False)
-            reason = sug.get("reason", "")
-
-            if conf < min_conf or not aid or not field or not val:
-                continue
-
-            if safe and _config.get("auto_apply_safe") and field in ("goal", "backstory", "description"):
-                from agent_registry import update_agent, get_agent
-                a = get_agent(aid)
-                if a:
-                    update_agent(aid, {field: val})
-                    results["changes"].append(
-                        f"Agent '{aid}' {field} updated (conf={conf:.0%}) [{trigger}]: {reason}"
-                    )
-                    logger.info(f"Auto-applied agent improvement: {aid}.{field}")
-            else:
-                results["proposals"].append(
-                    f"AGENT {aid}.{field} (conf={conf:.0%}) [{trigger}]: {reason}\n"
-                    f"  Suggested: {val[:200]}"
-                )
-
-    # ── Step 4: Tool description improvements ────────────────────────────
+    # ── 3. Tool description improvements (legacy) ────────────────────────────
     tool_prompt = (
         f"You are reviewing tool descriptions for AI agents.\n"
-        f"Cycle triggered by: {trigger.upper()} at {ts}"
-        f"{run_ctx_str}\n\n"
-        f"TOOLS (custom only — built-ins shown for context):\n{tool_ctx[:2000]}\n\n"
+        f"Cycle triggered by: {trigger.upper()} at {ts}{run_ctx_str}\n\n"
+        f"TOOLS:\n{tool_ctx[:2000]}\n\n"
         f"For each CUSTOM tool, evaluate if the description tells an LLM:\n"
-        f"- What the tool does\n"
-        f"- What input format it expects\n"
-        f"- What it returns\n\n"
+        f"- What it does, what input it expects, what it returns.\n\n"
         f"Output a JSON array:\n"
-        f'[{{\n'
-        f'  "tool_id": "my_tool",\n'
-        f'  "current_description": "current text",\n'
-        f'  "suggested_description": "improved text",\n'
-        f'  "confidence": 0.0\n'
-        f'}}]\n\n'
-        f"Only include tools where improvement is CLEAR (confidence > 0.85). Output ONLY JSON."
+        f'[{{"tool_id": "my_tool", "suggested_description": "improved text", "confidence": 0.0}}]\n\n'
+        f"Only tools where improvement is CLEAR (confidence > 0.85). Output ONLY JSON."
     )
-
-    tool_response    = _call_llm(tool_prompt)
-    tool_suggestions = _parse_json_response(tool_response)
+    tool_suggestions = _parse_json_response(_call_llm(tool_prompt))
     if isinstance(tool_suggestions, list):
         for sug in tool_suggestions:
-            if not isinstance(sug, dict):
-                continue
+            if not isinstance(sug, dict): continue
             tid  = sug.get("tool_id", "")
             val  = sug.get("suggested_description", "")
             conf = float(sug.get("confidence", 0))
@@ -387,26 +612,23 @@ def _run_improvement_cycle(run_context: Optional[dict] = None) -> dict:
                 t = get_tool(tid)
                 if t and not t.get("builtin"):
                     update_tool(tid, {"description": val})
-                    results["changes"].append(
-                        f"Tool '{tid}' description updated (conf={conf:.0%}) [{trigger}]"
-                    )
-                    logger.info(f"Auto-applied tool improvement: {tid}.description")
+                    results["changes"].append(f"Tool '{tid}' description updated (conf={conf:.0%})")
 
-    # ── Step 5: Write proposals and log ──────────────────────────────────
+    # ── 4. Write legacy flat proposals file + improvement log ────────────────
     if results["proposals"]:
         existing  = PROPOSALS_PATH.read_text(encoding="utf-8") if PROPOSALS_PATH.exists() else ""
         new_block = f"\n## Proposals — {ts} [{trigger}]\n\n" + "\n\n".join(results["proposals"]) + "\n"
         PROPOSALS_PATH.write_text(existing + new_block, encoding="utf-8")
 
-    run_tag = f"[{trigger}]"
+    run_tag   = f"[{trigger}]"
     if run_context:
-        run_tag += f" triggered by job '{run_context.get('job_id','?')}' ({run_context.get('topic','')[:40]})"
+        run_tag += f" job='{run_context.get('job_id','?')}' topic='{run_context.get('topic','')[:40]}'"
 
     log_entry = (
         f"\n## Cycle: {ts} {run_tag}\n"
         f"- Best practices updated: {results['best_practices_updated']}\n"
         f"- Auto-applied changes:   {len(results['changes'])}\n"
-        f"- Proposals written:      {len(results['proposals'])}\n"
+        f"- Proposals queued:       {len(results['proposals'])}\n"
     )
     if results["changes"]:
         log_entry += "\n### Changes applied:\n" + "\n".join(f"- {c}" for c in results["changes"]) + "\n"
@@ -414,45 +636,50 @@ def _run_improvement_cycle(run_context: Optional[dict] = None) -> dict:
     with open(IMPROVEMENT_LOG, "a", encoding="utf-8") as f:
         f.write(log_entry)
 
-    logger.info(f"Cycle [{trigger}] complete: {len(results['changes'])} changes, {len(results['proposals'])} proposals.")
+    logger.info(f"Cycle [{trigger}] done: {len(results['changes'])} changes, {len(results['proposals'])} proposals.")
     return results
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# JSON parse helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _parse_json_response(text: str) -> list:
-    """Extract and parse a JSON array from LLM response."""
-    if not text or text.startswith("[LLM"):
-        return []
+    """Extract and parse a JSON *array* from LLM response."""
+    if not text or text.startswith("[LLM"): return []
     m = re.search(r"\[.*\]", text, re.DOTALL)
-    if not m:
-        return []
-    try:
-        return json.loads(m.group(0))
-    except Exception:
-        return []
+    if not m: return []
+    try:    return json.loads(m.group(0))
+    except: return []
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# Broadcast + Telegram helpers
-# ─────────────────────────────────────────────────────────────────────────
+def _parse_json_obj(text: str) -> dict:
+    """Extract and parse a JSON *object* from LLM response."""
+    if not text or text.startswith("[LLM"): return {}
+    m = re.search(r"\{.*\}", text, re.DOTALL)
+    if not m: return {}
+    try:    return json.loads(m.group(0))
+    except: return {}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Broadcast + Telegram
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _broadcast_results(results: dict) -> None:
-    try:
-        import main as _main
-        trigger = results.get("trigger", "scheduled")
-        _main.sync_broadcast({
-            "type":    "agent_activity",
-            "agent":   "system",
-            "label":   "🔄 Self-Improver",
-            "message": (
-                f"🔄 [{trigger}] Improvement cycle complete. "
-                f"Changes: {len(results['changes'])} | "
-                f"Proposals: {len(results['proposals'])} | "
-                f"Best practices: {'updated' if results['best_practices_updated'] else 'unchanged'}"
-            ),
-            "ts": time.time(),
-        })
-    except Exception:
-        pass
+    trigger = results.get("trigger", "scheduled")
+    _broadcast({
+        "type":    "agent_activity",
+        "agent":   "system",
+        "label":   "🔄 Self-Improver",
+        "message": (
+            f"🔄 [{trigger}] Cycle complete — "
+            f"Changes: {len(results['changes'])} | "
+            f"Proposals: {len(results['proposals'])} | "
+            f"BP: {'updated' if results['best_practices_updated'] else 'unchanged'}"
+        ),
+        "ts": time.time(),
+    })
 
 
 def _notify_telegram(results: dict) -> None:
@@ -460,8 +687,8 @@ def _notify_telegram(results: dict) -> None:
         from telegram_bot import notify_message
         trigger = results.get("trigger", "scheduled")
         summary = (
-            f"🔄 Self-improvement cycle [{trigger}]\n"
-            f"Changes applied: {len(results['changes'])}\n"
+            f"🔄 Self-improvement [{trigger}]\n"
+            f"Changes: {len(results['changes'])}\n"
             f"Proposals: {len(results['proposals'])}\n"
             f"Best practices: {'updated' if results['best_practices_updated'] else 'unchanged'}\n"
         )
@@ -472,78 +699,44 @@ def _notify_telegram(results: dict) -> None:
         pass
 
 
-# ─────────────────────────────────────────────────────────────────────────
-# Background scheduler
-# ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Scheduler
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _scheduler_loop() -> None:
     cfg           = load_config()
     interval_secs = int(cfg.get("interval_hours", 6)) * 3600
     last_run      = 0.0
-
     logger.info(f"Self-improver scheduler active (interval: {cfg.get('interval_hours')}h)")
-
     while True:
         now = time.time()
         if now - last_run >= interval_secs:
             if _lock.acquire(blocking=False):
                 try:
-                    results  = _run_improvement_cycle()   # no run_context = scheduled
+                    results  = _run_improvement_cycle()
                     last_run = time.time()
                     _broadcast_results(results)
                     cfg = load_config()
-                    if cfg.get("notify_telegram"):
-                        _notify_telegram(results)
+                    if cfg.get("notify_telegram"): _notify_telegram(results)
                 except Exception as e:
-                    logger.error(f"Scheduled improvement cycle failed: {e}", exc_info=True)
+                    logger.error(f"Scheduled cycle failed: {e}", exc_info=True)
                 finally:
                     _lock.release()
-            # reload interval from config in case it changed
             cfg           = load_config()
             interval_secs = int(cfg.get("interval_hours", 6)) * 3600
         time.sleep(60)
 
 
-def start(interval_hours: Optional[int] = None) -> bool:
+def start_scheduler() -> None:
     global _thread
-    cfg = load_config()
-    if not cfg.get("enabled", True):
-        logger.info("Self-improver disabled in config.")
-        return False
-    if interval_hours:
-        cfg["interval_hours"] = interval_hours
-        save_config(cfg)
     if _thread is None or not _thread.is_alive():
-        _thread = threading.Thread(target=_scheduler_loop, daemon=True, name="self-improver")
+        _thread = threading.Thread(target=_scheduler_loop, daemon=True, name="si-scheduler")
         _thread.start()
-    return True
+        logger.info("Self-improver scheduler started.")
 
-
-def stop() -> None:
-    # Scheduler thread is daemon — it will stop when the process exits.
-    # Setting enabled=False in config prevents new cycles from starting.
-    cfg = load_config()
-    cfg["enabled"] = False
-    save_config(cfg)
-
-
-def run_now() -> dict:
-    """Trigger an immediate improvement cycle (blocking). Returns results."""
-    load_config()
-    return _run_improvement_cycle()
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Public API — manual trigger (non-blocking)
-# ─────────────────────────────────────────────────────────────────────────
 
 def trigger_improvement_cycle() -> None:
-    """
-    Manually trigger one improvement cycle in a background thread.
-    Called by POST /self-improver/run-now from main.py.
-    Uses a threading.Lock so concurrent calls are safely skipped
-    instead of being silently dropped forever.
-    """
+    """Manual non-blocking trigger."""
     def _run():
         if not _lock.acquire(blocking=False):
             logger.info("Self-improver busy — manual trigger skipped.")
@@ -552,50 +745,45 @@ def trigger_improvement_cycle() -> None:
             results = _run_improvement_cycle()
             _broadcast_results(results)
             cfg = _config or load_config()
-            if cfg.get("notify_telegram"):
-                _notify_telegram(results)
-            logger.info(f"Manual improvement cycle complete: {results}")
+            if cfg.get("notify_telegram"): _notify_telegram(results)
         except Exception as e:
-            logger.exception(f"Self-improver cycle failed: {e}")
+            logger.exception(f"Manual cycle failed: {e}")
         finally:
             _lock.release()
-
-    t = threading.Thread(target=_run, daemon=True, name="self-improver-manual")
-    t.start()
+    threading.Thread(target=_run, daemon=True, name="si-manual").start()
 
 
-def start_scheduler() -> None:
-    """
-    Start the background scheduler thread.
-    Call once from main.py startup.
-    """
-    global _thread
-    if _thread is None or not _thread.is_alive():
-        _thread = threading.Thread(target=_scheduler_loop, daemon=True, name="self-improver-scheduler")
-        _thread.start()
-        logger.info("Self-improver scheduler started.")
+# Legacy aliases
+def start(interval_hours=None):
+    cfg = load_config()
+    if not cfg.get("enabled", True): return False
+    if interval_hours:
+        cfg["interval_hours"] = interval_hours
+        save_config(cfg)
+    start_scheduler()
+    return True
+
+def run_now() -> dict:
+    load_config()
+    return _run_improvement_cycle()
 
 
-# ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Init
-# ─────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _init_best_practices() -> None:
     if not BEST_PRACTICES_PATH.exists():
         BEST_PRACTICES_PATH.write_text(
             "# Best Practices — Multi-Agent Orchestration\n\n"
-            "> Auto-maintained by the self-improvement service. "
-            "Updated after each improvement cycle.\n\n"
+            "> Auto-maintained by the self-improvement service.\n\n"
             "## Getting Started\n\n"
-            "1. Use `llama3.2:3b` or larger for complex multi-step research tasks.\n"
-            "2. `phi3:mini` works well for quick queries and simple summaries.\n"
-            "3. Keep research topics specific — broad topics produce weaker reports.\n"
-            "4. Custom agents added to the pipeline run after the Writer and receive "
-            "the full report as context.\n"
-            "5. Filesystem access must be explicitly granted before agents can read files.\n",
+            "1. Use `llama3.2:3b` or larger for complex research tasks.\n"
+            "2. Keep research topics specific — broad topics produce weaker reports.\n"
+            "3. Custom agents run after the Writer and receive the full report as context.\n"
+            "4. Filesystem access must be explicitly granted before agents can read files.\n",
             encoding="utf-8",
         )
 
-# Run init when module is imported
 _init_best_practices()
 load_config()
