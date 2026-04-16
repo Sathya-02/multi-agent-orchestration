@@ -19,9 +19,8 @@ import './styles/App.css'
 
 const WS_URL = 'ws://localhost:8000/ws'
 
-// ── Phase Bar — sticky bottom footer, shown only during/after a run ──────────
+// ── Phase Bar — sticky bottom footer, shown only during/after a run ──────────────────
 function PhaseBar({ currentPhase, running }) {
-  // PHASE_ORDER is string[], enrich each entry with icon/name from PHASE_META
   const phases = PHASE_ORDER.map(id => ({
     id,
     icon: PHASE_META[id]?.icon ?? '⚙️',
@@ -50,7 +49,7 @@ function PhaseBar({ currentPhase, running }) {
 }
 
 export default function App() {
-  // ── Core state ─────────────────────────────────────────
+  // ── Core state ────────────────────────────────────────────────────
   const [connected,     setConnected]     = useState(false)
   const [activeAgent,   setActiveAgent]   = useState(null)
   const [logs,          setLogs]          = useState([])
@@ -65,7 +64,7 @@ export default function App() {
   const [currentPhase,  setCurrentPhase]  = useState(null)
   const [currentWorker, setCurrentWorker] = useState(null)
 
-  // ── Panel visibility ────────────────────────────────────
+  // ── Panel visibility ──────────────────────────────────────────
   const [showDashboard,   setShowDashboard]   = useState(false)
   const [showUploadPanel, setShowUploadPanel] = useState(false)
   const [showFsPanel,     setShowFsPanel]     = useState(false)
@@ -76,20 +75,20 @@ export default function App() {
   const [showSettings,    setShowSettings]    = useState(false)
   const [show3DRoom,      setShow3DRoom]      = useState(false)
 
-  // ── Model state ─────────────────────────────────────────
+  // ── Model state ───────────────────────────────────────────────
   const [availableModels, setAvailableModels] = useState([])
   const [selectedModel,   setSelectedModel]   = useState('phi3:mini')
   const [currentModel,    setCurrentModel]    = useState('phi3:mini')
   const [modelSaving,     setModelSaving]     = useState(false)
   const [modelError,      setModelError]      = useState(null)
 
-  // ── File upload state ────────────────────────────────────
+  // ── File upload state ──────────────────────────────────────────
   const [uploads,       setUploads]       = useState([])
   const [selectedFiles, setSelectedFiles] = useState([])
   const [uploading,     setUploading]     = useState(false)
   const fileInputRef = useRef(null)
 
-  // ── Agent editor state ───────────────────────────────────
+  // ── Agent editor state ──────────────────────────────────────────
   const [agents,          setAgents]          = useState([])
   const [spawnRequests,   setSpawnRequests]   = useState([])
   const [spawnEnabled,    setSpawnEnabled]    = useState(true)
@@ -101,7 +100,7 @@ export default function App() {
   const [skillsSaving,    setSkillsSaving]    = useState(false)
   const [skillsAgentId,   setSkillsAgentId]   = useState(null)
 
-  // ── Filesystem config state ──────────────────────────────
+  // ── Filesystem config state ─────────────────────────────────────
   const [fsConfig,       setFsConfig]       = useState({ access_list:[], output_dir:null })
   const [fsAudit,        setFsAudit]        = useState([])
   const [fsAuditTab,     setFsAuditTab]     = useState(false)
@@ -113,7 +112,7 @@ export default function App() {
   const [outputDirInput, setOutputDirInput] = useState('')
   const [fsError,        setFsError]        = useState(null)
 
-  // ── Tool state ───────────────────────────────────────────
+  // ── Tool state ───────────────────────────────────────────────
   const [tools,         setTools]         = useState([])
   const [toolTab,       setToolTab]       = useState('list')
   const [editingTool,   setEditingTool]   = useState(null)
@@ -125,7 +124,7 @@ export default function App() {
     name:'', display_name:'', description:'', tags:'', code:'    return str(input_data)'
   })
 
-  // ── Settings / Telegram / Self-Improver state ────────────
+  // ── Settings / Telegram / Self-Improver state ────────────────────────
   const [showSettingsTab, setShowSettingsTab] = useState('telegram')
   const [tgConfig,    setTgConfig]    = useState({ bot_token:'', allowed_chat_ids:'', notify_chat_id:'', enabled:false })
   const [tgSaving,    setTgSaving]    = useState(false)
@@ -139,14 +138,14 @@ export default function App() {
   const [proposals,   setProposals]   = useState('')
   const [improvLog,   setImprovLog]   = useState('')
 
-  // ── Web Search state ─────────────────────────────────────
+  // ── Web Search state ──────────────────────────────────────────────
   const [wsConfig,     setWsConfig]     = useState({ enabled:false, provider:'auto', max_results:5, timeout_seconds:10, safe_search:true, region:'wt-wt', fallback_to_mock:true })
   const [wsSaving,     setWsSaving]     = useState(false)
   const [wsTesting,    setWsTesting]    = useState(false)
   const [wsTestResult, setWsTestResult] = useState(null)
   const [wsTestQuery,  setWsTestQuery]  = useState('weather in Tokyo')
 
-  // ── Knowledge Base / RAG state ───────────────────────────
+  // ── Knowledge Base / RAG state ───────────────────────────────────
   const [kbEntries,      setKbEntries]      = useState({ entries:[], sources:[], count:0 })
   const [kbConfig,       setKbConfig]       = useState({ enabled:true, embed_model:'nomic-embed-text', chunk_size:400, chunk_overlap:80, top_k:4, min_score:0.25, use_ollama_embed:false })
   const [kbConfigSaving, setKbConfigSaving] = useState(false)
@@ -168,13 +167,13 @@ export default function App() {
   const wsRef       = useRef(null)
   const activeTimer = useRef(null)
 
-  // ── Custom hooks ─────────────────────────────────────────
+  // ── Custom hooks ───────────────────────────────────────────────
   const { stats } = useStats()
 
   const pendingSpawns     = spawnRequests.filter(r => !r._resolved)
   const pendingToolSpawns = toolSpawnReqs.filter(r => !r._resolved)
 
-  // ── Init ─────────────────────────────────────────────────
+  // ── Init ──────────────────────────────────────────────────────
   useEffect(() => {
     fetchModels(); fetchUploads(); fetchAgents(); fetchSpawnSettings()
     fetchFsConfig(); fetchTools(); fetchToolSpawns(); fetchTelegramConfig()
@@ -211,12 +210,7 @@ export default function App() {
     return () => clearInterval(id)
   }, [])
 
-  // ── Helpers ───────────────────────────────────────────────
-  // FIX: relaxed deduplication — only suppress if same agent emits the
-  // identical message within 1 second. The previous guard (no time check)
-  // was silently dropping consecutive agent_activity events from the same
-  // agent (e.g. "queued" phase banner followed immediately by the first
-  // step-callback message), so nothing appeared in the feed.
+  // ── Helpers ─────────────────────────────────────────────────────
   const addLog = useCallback((agent, label, message, phase = false, ts = null, taskResult = false) =>
     setLogs(prev => {
       const now  = ts || Date.now() / 1000
@@ -225,7 +219,7 @@ export default function App() {
       return [...prev.slice(-150), { agent, label, message, phase, taskResult, ts: now }]
     }), [])
 
-  // ── Fetch functions ───────────────────────────────────────
+  // ── Fetch functions ───────────────────────────────────────────────
   const fetchModels = async () => {
     try {
       const d = await fetch(`${API_URL}/models`).then(r => r.json())
@@ -352,7 +346,7 @@ export default function App() {
     } catch {}
   }
 
-  // ── Message handler ───────────────────────────────────────
+  // ── Message handler ───────────────────────────────────────────────
   const handleMessage = useCallback((msg) => {
     if (msg.type === 'agent_working') {
       setCurrentWorker(msg)
@@ -382,14 +376,6 @@ export default function App() {
       setReportFormat(msg.format || 'md')
       setActiveAgent(null); setCurrentPhase(null); setCurrentWorker(null)
       addLog('system', '⚙️ System', `✅ Report complete — ${msg.filename} (${(msg.format || 'md').toUpperCase()})`)
-    }
-    if (msg.type === 'token_update') {
-      setStats(prev => prev ? {
-        ...prev,
-        tokens_in:   msg.tokens_in,
-        tokens_out:  msg.tokens_out,
-        tokens_last: msg.tokens_last,
-      } : prev)
     }
     if (msg.type === 'job_failed') {
       setRunning(false); setActiveAgent(null); setCurrentPhase(null); setCurrentWorker(null)
@@ -423,7 +409,7 @@ export default function App() {
 
   useEffect(() => { handleMessageRef.current = handleMessage }, [handleMessage])
 
-  // ── Model actions ─────────────────────────────────────────
+  // ── Model actions ───────────────────────────────────────────────
   const handleModelChange = async () => {
     const currentStr = typeof currentModel === 'string' ? currentModel : ''
     if (selectedModel === currentStr) return
@@ -444,7 +430,7 @@ export default function App() {
     } catch { setModelError('Failed') } finally { setModelSaving(false) }
   }
 
-  // ── File actions ──────────────────────────────────────────
+  // ── File actions ────────────────────────────────────────────────
   const handleFileUpload = async (e) => {
     const files = Array.from(e.target.files)
     if (!files.length) return
@@ -464,7 +450,7 @@ export default function App() {
     setSelectedFiles(p => p.filter(f => f !== filename))
   }
 
-  // ── Job actions ───────────────────────────────────────────
+  // ── Job actions ───────────────────────────────────────────────
   const handleRun = async () => {
     if (!topic.trim() || running) return
     setResult(null); setReportFile(null); setReportFormat('md'); setLogs([]); setRunning(true); setCurrentPhase(null)
@@ -481,7 +467,7 @@ export default function App() {
     const a = document.createElement('a'); a.href = `${API_URL}/reports/${reportFile}`; a.download = reportFile; a.click()
   }
 
-  // ── Agent editor actions ──────────────────────────────────
+  // ── Agent editor actions ──────────────────────────────────────────
   const handleCreateAgent = async () => {
     if (!newAgentForm.role.trim()) return
     const res = await fetch(`${API_URL}/agents`, {
@@ -521,7 +507,7 @@ export default function App() {
 
   const handleOpenSkills = async (agentId) => {
     setSkillsAgentId(agentId)
-    setSkillsText('')          // clear while loading
+    setSkillsText('')
     setAgentTab('skills')
     try {
       const d = await fetch(`${API_URL}/agents/${agentId}/skills`).then(r => r.json())
@@ -567,7 +553,7 @@ export default function App() {
     setSpawnToggling(false)
   }
 
-  // ── Filesystem actions ────────────────────────────────────
+  // ── Filesystem actions ────────────────────────────────────────────
   const handleAddFsAccess = async () => {
     if (!newFsPath.trim()) return
     setFsError(null)
@@ -610,7 +596,7 @@ export default function App() {
     } catch { setFsError('Failed to set output directory') }
   }
 
-  // ── Tool actions ──────────────────────────────────────────
+  // ── Tool actions ───────────────────────────────────────────────
   const handleCreateTool = async () => {
     if (!newToolForm.name.trim()) return
     const payload = {
@@ -682,7 +668,7 @@ export default function App() {
     await fetchTools()
   }
 
-  // ── Telegram / Self-Improver actions ─────────────────────
+  // ── Telegram / Self-Improver actions ─────────────────────────────
   const handleSaveTelegram = async () => {
     setTgSaving(true); setTgTestResult(null)
     try {
@@ -727,7 +713,7 @@ export default function App() {
     } catch {} finally { setTimeout(() => setSiRunning(false), 3000) }
   }
 
-  // ── Web Search actions ────────────────────────────────────
+  // ── Web Search actions ────────────────────────────────────────────
   const handleSaveWsConfig = async () => {
     setWsSaving(true); setWsTestResult(null)
     try {
@@ -758,7 +744,7 @@ export default function App() {
     } catch (e) { setWsTestResult(`❌ ${e}`) } finally { setWsTesting(false) }
   }
 
-  // ── Knowledge Base actions ────────────────────────────────
+  // ── Knowledge Base actions ──────────────────────────────────────────
   const handleSaveKbConfig = async () => {
     setKbConfigSaving(true)
     try {
@@ -839,7 +825,7 @@ export default function App() {
     } catch (e) { console.error('RAG query failed', e) } finally { setRagLoading(false) }
   }
 
-  // ── Badge color ───────────────────────────────────────────
+  // ── Badge color ───────────────────────────────────────────────
   const modelBadgeColor = () => {
     const m = typeof currentModel === 'string' ? currentModel : ''
     if (m.includes('llama3') || m.includes('mistral') || m.includes('qwen')) return '#22c55e'
@@ -847,7 +833,7 @@ export default function App() {
     return '#6366f1'
   }
 
-  // ── Render ────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────
   return (
     <div className="app-container">
       {/* Fixed top bars */}
@@ -882,7 +868,24 @@ export default function App() {
       {showUploadPanel && <FileUploadPanel uploads={uploads} uploading={uploading} selectedFiles={selectedFiles} setSelectedFiles={setSelectedFiles} handleFileUpload={handleFileUpload} handleDeleteUpload={handleDeleteUpload} fileInputRef={fileInputRef} onClose={() => setShowUploadPanel(false)} />}
       {showFsPanel     && <FilesystemPanel fsConfig={fsConfig} fsAudit={fsAudit} fsAuditTab={fsAuditTab} setFsAuditTab={setFsAuditTab} fetchFsAudit={fetchFsAudit} newFsPath={newFsPath} setNewFsPath={setNewFsPath} newFsLabel={newFsLabel} setNewFsLabel={setNewFsLabel} newFsRead={newFsRead} setNewFsRead={setNewFsRead} newFsWrite={newFsWrite} setNewFsWrite={setNewFsWrite} newFsEdit={newFsEdit} setNewFsEdit={setNewFsEdit} fsError={fsError} outputDirInput={outputDirInput} setOutputDirInput={setOutputDirInput} handleAddFsAccess={handleAddFsAccess} handleRemoveFsAccess={handleRemoveFsAccess} handleToggleFsFlag={handleToggleFsFlag} handleSetOutputDir={handleSetOutputDir} onClose={() => setShowFsPanel(false)} />}
       {showAgentEditor && <AgentEditorPanel agents={agents} agentTab={agentTab} setAgentTab={setAgentTab} editingAgent={editingAgent} setEditingAgent={setEditingAgent} newAgentForm={newAgentForm} setNewAgentForm={setNewAgentForm} skillsText={skillsText} setSkillsText={setSkillsText} skillsSaving={skillsSaving} skillsAgentId={skillsAgentId} setSkillsAgentId={setSkillsAgentId} pendingSpawns={pendingSpawns} spawnEnabled={spawnEnabled} spawnToggling={spawnToggling} handleCreateAgent={handleCreateAgent} handleUpdateAgent={handleUpdateAgent} handleDeleteAgent={handleDeleteAgent} handleToggleActive={handleToggleActive} handleOpenSkills={handleOpenSkills} handleSaveSkills={handleSaveSkills} handleSpawnDecision={handleSpawnDecision} handleToggleSpawn={handleToggleSpawn} onClose={() => setShowAgentEditor(false)} />}
-      {showToolPanel   && <ToolsPanel tools={tools} toolTab={toolTab} setToolTab={setToolTab} editingTool={editingTool} setEditingTool={setEditingTool} newToolForm={newToolForm} setNewToolForm={setNewToolForm} toolMdText={toolMdText} setToolMdText={setToolMdText} toolMdSaving={toolMdSaving} pendingToolSpawns={pendingToolSpawns} handleCreateTool={handleCreateTool} handleUpdateTool={handleUpdateTool} handleDeleteTool={handleDeleteTool} handleToggleToolActive={handleToggleToolActive} handleOpenToolMd={handleOpenToolMd} handleSaveToolMd={handleSaveToolMd} handleToolSpawnDecision={handleToolSpawnDecision} onClose={() => setShowToolPanel(false)} />}
+
+      {/* ToolsPanel — fixed prop contract: handleCreateTool, handleToggleToolActive, handleToolSpawnDecision */}
+      {showToolPanel && (
+        <ToolsPanel
+          tools={tools}
+          pendingToolSpawns={pendingToolSpawns}
+          handleCreateTool={handleCreateTool}
+          handleDeleteTool={handleDeleteTool}
+          handleToggleToolActive={handleToggleToolActive}
+          handleOpenToolMd={handleOpenToolMd}
+          handleSaveToolMd={handleSaveToolMd}
+          handleToolSpawnDecision={(s, approved) =>
+            handleToolSpawnDecision(s.request_id ?? s.id, approved)
+          }
+          onClose={() => setShowToolPanel(false)}
+        />
+      )}
+
       {showSettings    && <SettingsPanel settingsTab={showSettingsTab} setSettingsTab={setShowSettingsTab} tgConfig={tgConfig} setTgConfig={setTgConfig} tgSaving={tgSaving} tgTesting={tgTesting} tgTestResult={tgTestResult} tgBotSet={tgBotSet} siConfig={siConfig} setSiConfig={setSiConfig} siSaving={siSaving} siRunning={siRunning} bestPractices={bestPractices} proposals={proposals} improvLog={improvLog} wsConfig={wsConfig} setWsConfig={setWsConfig} wsSaving={wsSaving} wsTesting={wsTesting} wsTestResult={wsTestResult} wsTestQuery={wsTestQuery} setWsTestQuery={setWsTestQuery} handleSaveTelegram={handleSaveTelegram} handleTestTelegram={handleTestTelegram} handleSaveSiConfig={handleSaveSiConfig} handleRunImprover={handleRunImprover} handleSaveWsConfig={handleSaveWsConfig} handleTestWsProviders={handleTestWsProviders} handleRunWsQuery={handleRunWsQuery} onClose={() => setShowSettings(false)} />}
       {showKbPanel     && <KnowledgeBasePanel kbTab={kbTab} setKbTab={setKbTab} kbEntries={kbEntries} kbConfig={kbConfig} setKbConfig={setKbConfig} kbConfigSaving={kbConfigSaving} kbUploading={kbUploading} kbSearchQ={kbSearchQ} setKbSearchQ={setKbSearchQ} kbSearchResult={kbSearchResult} kbSearching={kbSearching} kbPasteText={kbPasteText} setKbPasteText={setKbPasteText} kbPasteName={kbPasteName} setKbPasteName={setKbPasteName} kbPasteTags={kbPasteTags} setKbPasteTags={setKbPasteTags} kbFileRef={kbFileRef} ragQuery={ragQuery} setRagQuery={setRagQuery} ragTopK={ragTopK} setRagTopK={setRagTopK} ragLoading={ragLoading} ragResult={ragResult} handleSaveKbConfig={handleSaveKbConfig} handleKbFileUpload={handleKbFileUpload} handleKbPasteIngest={handleKbPasteIngest} handleDeleteKbSource={handleDeleteKbSource} handleClearKb={handleClearKb} handleKbSearch={handleKbSearch} handleRagQuery={handleRagQuery} onClose={() => setShowKbPanel(false)} />}
       {showModelPanel  && <ModelPickerPanel availableModels={availableModels} selectedModel={selectedModel} setSelectedModel={setSelectedModel} currentModel={currentModel} modelSaving={modelSaving} modelError={modelError} handleModelChange={handleModelChange} onClose={() => setShowModelPanel(false)} />}
@@ -919,7 +922,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Phase progress bar — sticky bottom footer, last child so it anchors to viewport bottom */}
+      {/* Phase progress bar — sticky bottom footer */}
       <PhaseBar currentPhase={currentPhase} running={running} />
     </div>
   )
