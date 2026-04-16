@@ -6,6 +6,8 @@ Fix history:
   20. [FIX] ChatOpenAI/OPENAI_API_KEY error — use ChatOllama (crewai 0.51)
   21. [FIX] tokens still zero — set model_name on ChatOllama so crewai's
       TokenCalcHandler wires up; read from crew.usage_metrics not result_obj
+  22. [FIX] ValueError: ChatOllama object has no field model_name — use
+      object.__setattr__ to bypass Pydantic v1 __setattr__ guard
 """
 
 from __future__ import annotations
@@ -102,6 +104,11 @@ def _build_ollama_llm(model: str, temperature: float, num_ctx: int, num_predict:
     TokenCalcHandler (the tiktoken callback that counts tokens).  ChatOllama
     exposes .model not .model_name, so we set model_name manually after
     construction so the callback IS registered and tokens are counted.
+
+    ChatOllama is a Pydantic v1 model — direct assignment raises ValueError
+    ("object has no field model_name").  Use object.__setattr__ to bypass
+    Pydantic's __setattr__ guard, which is the correct Pydantic v1 pattern
+    for attaching extra runtime state to a model instance.
     """
     ollama_kwargs = dict(
         model       = model,
@@ -132,10 +139,15 @@ def _build_ollama_llm(model: str, temperature: float, num_ctx: int, num_predict:
             "Run: pip install langchain-ollama"
         )
 
-    # ★ Critical fix: crewai 0.51 TokenCalcHandler checks model_name to wire
-    # up tiktoken counting.  ChatOllama uses .model, not .model_name.
+    # ★ Critical fix: crewai 0.51 TokenCalcHandler checks hasattr(llm, 'model_name').
+    # ChatOllama is a Pydantic v1 model — direct assignment raises ValueError.
+    # Use object.__setattr__ to bypass Pydantic's __setattr__ guard.
     if not getattr(llm, "model_name", None):
-        llm.model_name = model
+        try:
+            object.__setattr__(llm, "model_name", model)
+        except Exception:
+            # Last resort: inject via __dict__ if object.__setattr__ also fails
+            llm.__dict__["model_name"] = model
 
     return llm
 
@@ -212,12 +224,12 @@ def _make_step_callback(broadcast_fn, agents_map, labels_map, ordered_ids):
             if not text:
                 if any(s in str(item).lower() for s in _LIMIT_SENTINELS):
                     _emit_activity(broadcast_fn, aid, label,
-                                   f"\u26a0\ufe0f {label} hit iteration limit", phase=False)
+                                   f"⚠️ {label} hit iteration limit", phase=False)
                     logger.warning("Agent %s hit iteration/time limit", aid)
                 continue
 
             if len(text) > 350:
-                text = text[:347] + "\u2026"
+                text = text[:347] + "…"
             _emit_working(broadcast_fn, aid, label, text)
             _emit_activity(broadcast_fn, aid, label, text, phase=False)
 
@@ -232,13 +244,13 @@ def _make_task_callback(broadcast_fn, agent_id: str, label: str):
             if _is_sentinel(text):
                 logger.warning("Agent %s hit sentinel: %s", agent_id, text)
                 _emit_activity(broadcast_fn, agent_id, label,
-                               f"\u26a0\ufe0f {label} hit iteration/time limit.",
+                               f"⚠️ {label} hit iteration/time limit.",
                                phase=False, task_result=False)
                 return
             if len(text) > 400:
-                text = text[:397] + "\u2026"
+                text = text[:397] + "…"
             _emit_activity(broadcast_fn, agent_id, label,
-                           f"\u2705 {label} task done: {text[:200]}",
+                           f"✅ {label} task done: {text[:200]}",
                            phase=False, task_result=True)
         except Exception as exc:
             logger.debug("task_callback error: %s", exc)
@@ -278,7 +290,7 @@ def run_crew(
     num_predict = llm_cfg.get("num_predict", 1024)
 
     llm = _build_ollama_llm(model, temperature, num_ctx, num_predict)
-    logger.info("LLM ready: model=%s model_name=%s", model, getattr(llm, "model_name", "?"))
+    logger.info("LLM ready: model=%s  model_name attr=%s", model, getattr(llm, "model_name", "MISSING"))
 
     # ── Load agents ───────────────────────────────────────────────────────
     agents_map: dict[str, Agent] = {}
@@ -341,8 +353,8 @@ def run_crew(
 
     if ordered_ids:
         fid, flabel = ordered_ids[0], labels_map.get(ordered_ids[0], ordered_ids[0])
-        _emit_activity(broadcast_fn, fid, flabel, f"\U0001f50d {flabel} is starting\u2026", phase=True)
-        _emit_working(broadcast_fn, fid, flabel, "Thinking\u2026")
+        _emit_activity(broadcast_fn, fid, flabel, f"🔍 {flabel} is starting…", phase=True)
+        _emit_working(broadcast_fn, fid, flabel, "Thinking…")
 
     crew = Crew(
         agents=agent_list, tasks=tasks,
@@ -362,16 +374,16 @@ def run_crew(
         for aid in active_aids:
             label = labels_map.get(aid, aid)
             msg = (
-                f"\u26a0\ufe0f {label} stopped: agent hit iteration/time limit. Try a larger model."
+                f"⚠️ {label} stopped: agent hit iteration/time limit. Try a larger model."
                 if any(s in err_str.lower() for s in _LIMIT_SENTINELS)
-                else f"\u274c {label} failed: {err_str[:200]}"
+                else f"❌ {label} failed: {err_str[:200]}"
             )
             _emit_activity(broadcast_fn, aid, label, msg, phase=False)
         raise
 
     result_text = str(result_obj) if result_obj else "No output produced."
 
-    # ── Build report ─────────────────────────────────────────────────────
+    # ── Build report ──────────────────────────────────────────────────────
     active_labels   = [labels_map.get(aid, aid) for aid in ordered_ids if agents_map.get(aid) in agents_with_tasks]
     slug            = _topic_slug(topic)
     ts_str          = generated.strftime("%Y%m%d_%H%M%S")
@@ -389,19 +401,18 @@ def run_crew(
     for aid in ordered_ids:
         if agents_map.get(aid) in agents_with_tasks:
             label = labels_map.get(aid, aid)
-            _emit_activity(broadcast_fn, aid, label, f"\u2705 {label} complete",
+            _emit_activity(broadcast_fn, aid, label, f"✅ {label} complete",
                            phase=False, task_result=True)
 
-    # ── Token usage ─────────────────────────────────────────────────────
-    # crewai 0.51: tokens are on crew.usage_metrics (UsageMetrics), NOT on
-    # result_obj.token_usage.  They are populated by TokenCalcHandler which
-    # only wires up when llm.model_name is set (fixed in _build_ollama_llm).
+    # ── Token usage ───────────────────────────────────────────────────────
+    # crewai 0.51: tokens aggregated into crew.usage_metrics (UsageMetrics)
+    # by calculate_usage_metrics() which reads agent._token_process summaries.
+    # TokenCalcHandler only fires if llm.model_name is set (fixed above).
     t_in  = 0
     t_out = 0
     try:
         um = getattr(crew, "usage_metrics", None)
         if um is None:
-            # fallback: manually call calculate_usage_metrics
             um = crew.calculate_usage_metrics()
         if um:
             t_in  = int(getattr(um, "prompt_tokens",     0) or 0)
