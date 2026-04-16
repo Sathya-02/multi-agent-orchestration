@@ -167,12 +167,19 @@ try:
 
     class _SelfImproverAdapter:
         _BASE = Path(__file__).parent
-        def get_config(self):          return _si.load_config()
-        def save_config(self, cfg):    cur = _si.load_config(); cur.update(cfg); _si.save_config(cur)
-        def run_cycle(self):           return _si.trigger_improvement_cycle()
-        def get_best_practices(self):  p = self._BASE/"BEST_PRACTICES.md";      return p.read_text(encoding="utf-8") if p.exists() else ""
-        def get_proposals(self):       p = self._BASE/"IMPROVEMENT_PROPOSALS.md"; return p.read_text(encoding="utf-8") if p.exists() else ""
-        def get_log(self):             p = self._BASE/"IMPROVEMENT_LOG.md";     return p.read_text(encoding="utf-8") if p.exists() else ""
+        def get_config(self):                          return _si.load_config()
+        def save_config(self, cfg):                    cur = _si.load_config(); cur.update(cfg); _si.save_config(cur)
+        def run_cycle(self):                           return _si.trigger_improvement_cycle()
+        def get_best_practices(self):                  p = self._BASE/"BEST_PRACTICES.md";       return p.read_text(encoding="utf-8") if p.exists() else ""
+        def get_proposals(self):                       p = self._BASE/"IMPROVEMENT_PROPOSALS.md"; return p.read_text(encoding="utf-8") if p.exists() else ""
+        def get_log(self):                             p = self._BASE/"IMPROVEMENT_LOG.md";      return p.read_text(encoding="utf-8") if p.exists() else ""
+        def get_pending_proposals(self):               return _si.get_pending_proposals()
+        def get_all_proposals(self):                   return _si.get_all_proposals()
+        def approve_proposal(self, pid):               return _si.approve_proposal(pid)
+        def reject_proposal(self, pid, reason=""):     return _si.reject_proposal(pid, reason)
+        def get_evolution_history(self, agent_id=None):return _si.get_evolution_history(agent_id)
+        def set_broadcast_fn(self, fn):                _si.set_broadcast_fn(fn)
+        def start_scheduler(self):                     _si.start_scheduler()
 
     self_improver = _SelfImproverAdapter()
     SI_ENABLED = True
@@ -376,12 +383,13 @@ class TelegramConfigUpdate(BaseModel):
     enabled:          Optional[bool]      = None
 
 class SIConfigUpdate(BaseModel):
-    enabled:          Optional[bool]  = None
-    interval_hours:   Optional[float] = None
-    auto_apply_safe:  Optional[bool]  = None
-    notify_telegram:  Optional[bool]  = None
-    min_confidence:   Optional[float] = None
-    model_override:   Optional[str]   = None
+    enabled:              Optional[bool]  = None
+    interval_hours:       Optional[float] = None
+    auto_apply_safe:      Optional[bool]  = None
+    notify_telegram:      Optional[bool]  = None
+    min_confidence:       Optional[float] = None
+    auto_apply_threshold: Optional[float] = None
+    model_override:       Optional[str]   = None
 
 class WebSearchConfigUpdate(BaseModel):
     enabled:          Optional[bool] = None
@@ -434,6 +442,10 @@ _start_time  = time.time()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Multi-Agent Orchestration API starting up")
+    # Inject broadcast function into self_improver so it can push live WS events
+    if SI_ENABLED:
+        self_improver.set_broadcast_fn(sync_broadcast)
+        self_improver.start_scheduler()
     yield
     logger.info("Shutting down")
 
@@ -442,17 +454,13 @@ app = FastAPI(title="Multi-Agent Orchestration", lifespan=lifespan)
 # ---------------------------------------------------------------------------
 # CORS
 # ---------------------------------------------------------------------------
-# IMPORTANT: When allow_credentials=True, browsers reject allow_origins=["*"].
-# List all origins that the frontend runs on (dev + prod).
 _CORS_ORIGINS = [
-    "http://localhost:5173",   # Vite dev server
-    "http://localhost:3000",   # CRA / Next dev
-    "http://localhost:4173",   # Vite preview
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://localhost:4173",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:3000",
 ]
-# Allow additional origins from env var (comma-separated), e.g. in production:
-#   CORS_ORIGINS=https://app.yourdomain.com
 _extra = os.environ.get("CORS_ORIGINS", "")
 if _extra:
     _CORS_ORIGINS += [o.strip() for o in _extra.split(",") if o.strip()]
@@ -650,7 +658,6 @@ async def run_job(body: RunRequest, background_tasks: BackgroundTasks, current_u
                     spawn_requests=spawn_requests, spawn_enabled=spawn_enabled,
                 ),
             )
-            
             tokens_in  += t_in
             tokens_out += t_out
             tokens_last = t_in + t_out
@@ -1071,6 +1078,46 @@ def get_proposals(current_user=_auth_dep):
 def get_si_log(current_user=_auth_dep):
     if not SI_ENABLED: return {"content": ""}
     return {"content": self_improver.get_log()}
+
+# --- Human-in-the-Loop evolution endpoints -----------------------------------
+
+@app.get("/self-improver/proposals/pending")
+def get_pending_proposals(current_user=_auth_dep):
+    """Structured list of proposals awaiting human decision."""
+    if not SI_ENABLED: return []
+    return self_improver.get_pending_proposals()
+
+@app.get("/self-improver/proposals/all")
+def get_all_proposals_list(current_user=_auth_dep):
+    """All proposals (pending + approved + rejected)."""
+    if not SI_ENABLED: return []
+    return self_improver.get_all_proposals()
+
+@app.post("/self-improver/proposals/{proposal_id}/approve")
+async def approve_proposal(proposal_id: str, current_user=_auth_dep):
+    """Human approves → patches SKILLS.md immediately + live WebSocket broadcast."""
+    if not SI_ENABLED: return {"error": "Self-improver disabled"}
+    result = self_improver.approve_proposal(proposal_id)
+    if result.get("ok"):
+        await broadcast({"type": "agents_updated"})
+        await broadcast({
+            "type":        "si_proposal_applied",
+            "proposal_id": proposal_id,
+            "applied":     result.get("applied", []),
+        })
+    return result
+
+@app.post("/self-improver/proposals/{proposal_id}/reject")
+async def reject_proposal(proposal_id: str, reason: str = "", current_user=_auth_dep):
+    """Human rejects — logged with reason, no SKILLS.md change."""
+    if not SI_ENABLED: return {"error": "Self-improver disabled"}
+    return self_improver.reject_proposal(proposal_id, reason)
+
+@app.get("/self-improver/evolution-history")
+def get_evolution_history(agent_id: str = None, current_user=_auth_dep):
+    """Full lineage of all SKILLS.md changes ever applied. Filter by agent_id optionally."""
+    if not SI_ENABLED: return []
+    return self_improver.get_evolution_history(agent_id)
 
 # ---------------------------------------------------------------------------
 # Web Search  /web-search/*
