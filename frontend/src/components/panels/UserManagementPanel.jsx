@@ -1,6 +1,10 @@
 /**
  * UserManagementPanel.jsx  — Admin only
  *
+ * FIX: replaced `token` (not exposed by auth context) with
+ *      the `authHeaders` function imported from auth.jsx.
+ *      This ensures every fetch carries a valid Bearer token.
+ *
  * Features:
  *   - List all users with role badges
  *   - Create new user (username, display name, password, role)
@@ -9,10 +13,11 @@
  *   - Grant / revoke individual extra permissions beyond their base role
  *   - Delete user (cannot delete self)
  *   - Reset password
+ *   - Role Capabilities tab (admin + assign_roles) — checkbox matrix
  */
 import { useState, useEffect, useCallback } from 'react'
 import '../../styles/App.css'
-import { useAuth } from '../../auth.jsx'
+import { useAuth, authHeaders } from '../../auth.jsx'   // ← import authHeaders directly
 import { can, ROLES, PERMISSION_GROUPS, PERMISSION_LABELS } from '../../rbac.js'
 
 const API = (path) => `http://localhost:8000${path}`
@@ -21,6 +26,29 @@ const ROLE_META = {
   admin:    { label: 'Admin',    color: '#f87171', bg: 'rgba(239,68,68,0.12)' },
   operator: { label: 'Operator', color: '#a5b4fc', bg: 'rgba(99,102,241,0.12)' },
   viewer:   { label: 'Viewer',   color: '#94a3b8', bg: 'rgba(100,116,139,0.12)' },
+}
+
+const ROLE_RANK = { viewer: 0, operator: 1, admin: 2 }
+
+const PERM_MIN = {
+  view_dashboard:'viewer', view_files:'viewer', view_filesystem:'viewer',
+  view_kb:'viewer', view_tools:'viewer', view_agents:'viewer',
+  view_settings:'viewer', view_models:'viewer', kb_search:'viewer', kb_rag_query:'viewer',
+  upload_files:'operator', delete_files:'operator', ingest_kb:'operator',
+  delete_kb_source:'operator', clear_kb:'operator', save_kb_config:'operator',
+  run_task:'operator', chat_send:'operator', web_search:'operator',
+  filesystem_write:'operator', approve_spawn:'operator', add_tool:'operator',
+  edit_tool:'operator', delete_tool:'operator', edit_agent:'operator', edit_skills_md:'operator',
+  manage_users:'admin', create_agent:'admin', delete_agent:'admin',
+  edit_settings:'admin', change_model:'admin', self_improve:'admin', assign_roles:'admin',
+}
+
+// Builds headers for every API call — reads token from storage via auth.jsx
+function apiHeaders() {
+  return {
+    'Content-Type': 'application/json',
+    ...authHeaders(),   // adds Authorization: Bearer <token> if token exists
+  }
 }
 
 function RoleBadge({ role }) {
@@ -35,13 +63,14 @@ function RoleBadge({ role }) {
 }
 
 export default function UserManagementPanel({ onClose }) {
-  const { user: me, token } = useAuth()
+  const { user: me } = useAuth()   // ← no longer destructuring token
   const canManage = can(me, 'manage_users')
+  const canAssign = can(me, 'assign_roles')
 
   const [users,   setUsers]   = useState([])
   const [loading, setLoading] = useState(false)
   const [error,   setError]   = useState('')
-  const [tab,     setTab]     = useState('users')   // 'users' | 'create'
+  const [tab,     setTab]     = useState('users')   // 'users' | 'create' | 'roles'
 
   // Create form
   const [newUsername,    setNewUsername]    = useState('')
@@ -50,37 +79,46 @@ export default function UserManagementPanel({ onClose }) {
   const [newRole,        setNewRole]        = useState('viewer')
   const [creating,       setCreating]       = useState(false)
 
-  // Permission editor (per user)
-  const [expandedUser,   setExpandedUser]   = useState(null)
-  const [pwdUser,        setPwdUser]        = useState(null)
-  const [newPwd,         setNewPwd]         = useState('')
-  const [saving,         setSaving]         = useState({})
+  // Per-user expansion
+  const [expandedUser, setExpandedUser] = useState(null)
+  const [pwdUser,      setPwdUser]      = useState(null)
+  const [newPwd,       setNewPwd]       = useState('')
+  const [saving,       setSaving]       = useState({})
 
-  const authHeaders = useCallback(() => ({
-    'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-  }), [token])
+  // ── Role Capabilities state ──
+  const [permRole,      setPermRole]      = useState({ ...PERM_MIN })
+  const [roleCapSaving, setRoleCapSaving] = useState(false)
+  const [roleCapMsg,    setRoleCapMsg]    = useState('')
 
   const fetchUsers = useCallback(async () => {
     setLoading(true); setError('')
     try {
-      const r = await fetch(API('/auth/users'), { headers: authHeaders() })
+      const r = await fetch(API('/auth/users'), { headers: apiHeaders() })
       if (!r.ok) throw new Error(await r.text())
       const d = await r.json()
       setUsers(Array.isArray(d) ? d : (d.users || []))
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
-  }, [authHeaders])
+  }, [])
 
-  useEffect(() => { if (canManage) fetchUsers() }, [canManage, fetchUsers])
+  const fetchRoleCaps = useCallback(async () => {
+    try {
+      const r = await fetch(API('/auth/role-capabilities'), { headers: apiHeaders() })
+      if (!r.ok) return
+      const d = await r.json()
+      if (d && typeof d === 'object' && !d.error) setPermRole(prev => ({ ...prev, ...d }))
+    } catch { /* ignore — endpoint may not exist yet */ }
+  }, [])
+
+  useEffect(() => {
+    if (canManage) { fetchUsers(); fetchRoleCaps() }
+  }, [canManage, fetchUsers, fetchRoleCaps])
 
   const patchUser = async (username, body) => {
     setSaving(p => ({ ...p, [username]: true }))
     try {
       const r = await fetch(API(`/auth/users/${username}`), {
-        method: 'PATCH',
-        headers: authHeaders(),
-        body: JSON.stringify(body),
+        method: 'PATCH', headers: apiHeaders(), body: JSON.stringify(body),
       })
       if (!r.ok) throw new Error(await r.text())
       await fetchUsers()
@@ -92,7 +130,7 @@ export default function UserManagementPanel({ onClose }) {
     if (!window.confirm(`Delete user "${username}"? This cannot be undone.`)) return
     try {
       const r = await fetch(API(`/auth/users/${username}`), {
-        method: 'DELETE', headers: authHeaders()
+        method: 'DELETE', headers: apiHeaders()
       })
       if (!r.ok) throw new Error(await r.text())
       await fetchUsers()
@@ -103,8 +141,7 @@ export default function UserManagementPanel({ onClose }) {
     if (!newPwd.trim()) return
     try {
       const r = await fetch(API(`/auth/users/${username}/password`), {
-        method: 'POST',
-        headers: authHeaders(),
+        method: 'POST', headers: apiHeaders(),
         body: JSON.stringify({ new_password: newPwd, admin_override: true }),
       })
       if (!r.ok) throw new Error(await r.text())
@@ -117,8 +154,7 @@ export default function UserManagementPanel({ onClose }) {
     setCreating(true)
     try {
       const r = await fetch(API('/auth/users'), {
-        method: 'POST',
-        headers: authHeaders(),
+        method: 'POST', headers: apiHeaders(),
         body: JSON.stringify({
           username: newUsername.trim(),
           display_name: newDisplayName.trim() || newUsername.trim(),
@@ -135,20 +171,36 @@ export default function UserManagementPanel({ onClose }) {
   }
 
   const toggleExtraPerm = async (u, perm) => {
-    const cur = Array.isArray(u.extra_permissions) ? u.extra_permissions : []
+    const cur  = Array.isArray(u.extra_permissions) ? u.extra_permissions : []
     const next = cur.includes(perm) ? cur.filter(p => p !== perm) : [...cur, perm]
     await patchUser(u.username, { extra_permissions: next })
   }
 
+  const saveRoleCapabilities = async () => {
+    setRoleCapSaving(true); setRoleCapMsg('')
+    try {
+      const r = await fetch(API('/auth/role-capabilities'), {
+        method: 'PATCH', headers: apiHeaders(), body: JSON.stringify(permRole),
+      })
+      if (!r.ok) throw new Error(await r.text())
+      setRoleCapMsg('✅ Role capabilities saved')
+    } catch (e) {
+      setRoleCapMsg('⚠️ Saved locally only (' + e.message + ')')
+    } finally { setRoleCapSaving(false) }
+  }
+
   if (!canManage) return (
     <div className="overlay-panel" style={{ padding:24 }}>
-      <div className="overlay-header"><span>👥 Users</span><button className="overlay-close" onClick={onClose}>✕</button></div>
+      <div className="overlay-header">
+        <span>👥 Users</span>
+        <button className="overlay-close" onClick={onClose}>✕</button>
+      </div>
       <div style={viewerBanner}>🔒 User management requires Admin role.</div>
     </div>
   )
 
   return (
-    <div className="overlay-panel" style={{ maxWidth:640, width:'100%' }}>
+    <div className="overlay-panel" style={{ maxWidth:680, width:'100%' }}>
       <div className="overlay-header">
         <span>👥 User Management</span>
         <button className="overlay-close" onClick={onClose}>✕</button>
@@ -158,9 +210,17 @@ export default function UserManagementPanel({ onClose }) {
       <div className="agent-tabs">
         <button className={`agent-tab${tab==='users'  ? ' active':''}`} onClick={() => setTab('users')}>👥 Users</button>
         <button className={`agent-tab${tab==='create' ? ' active':''}`} onClick={() => setTab('create')}>➕ Create User</button>
+        {canAssign && (
+          <button className={`agent-tab${tab==='roles' ? ' active':''}`} onClick={() => setTab('roles')}>🛡️ Role Capabilities</button>
+        )}
       </div>
 
-      {error && <div style={{ margin:'8px 14px', padding:'7px 10px', borderRadius:6, background:'rgba(239,68,68,0.1)', border:'1px solid rgba(239,68,68,0.3)', color:'#f87171', fontSize:12 }}>{error}</div>}
+      {error && (
+        <div style={{ margin:'8px 14px', padding:'7px 10px', borderRadius:6,
+          background:'rgba(239,68,68,0.1)', border:'1px solid rgba(239,68,68,0.3)',
+          color:'#f87171', fontSize:12 }}>{error}
+        </div>
+      )}
 
       {/* ── USERS LIST ── */}
       {tab === 'users' && (
@@ -169,7 +229,7 @@ export default function UserManagementPanel({ onClose }) {
           {!loading && users.length === 0 && <div className="empty-hint">No users found.</div>}
 
           {users.map(u => {
-            const isSelf    = u.username === me.username
+            const isSelf     = u.username === me.username
             const isExpanded = expandedUser === u.username
             const isPwdOpen  = pwdUser     === u.username
             return (
@@ -191,7 +251,6 @@ export default function UserManagementPanel({ onClose }) {
                     {(u.display_name || u.username)[0].toUpperCase()}
                   </div>
 
-                  {/* Name + username */}
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontSize:13, fontWeight:600, color:'var(--tx-primary)' }}>
                       {u.display_name || u.username}
@@ -212,7 +271,6 @@ export default function UserManagementPanel({ onClose }) {
                     {u.active !== false ? '🟢' : '🔴'}
                   </button>
 
-                  {/* Expand permissions */}
                   <button
                     className="agent-action-btn"
                     onClick={() => setExpandedUser(isExpanded ? null : u.username)}
@@ -220,13 +278,12 @@ export default function UserManagementPanel({ onClose }) {
                     {isExpanded ? '▲ Less' : '▼ Perms'}
                   </button>
 
-                  {/* Delete */}
                   {!isSelf && (
                     <button className="del-btn" onClick={() => deleteUser(u.username)} title="Delete user">🗑</button>
                   )}
                 </div>
 
-                {/* ── Expanded: role + extra permissions editor ── */}
+                {/* ── Expanded: role + extra permissions ── */}
                 {isExpanded && (
                   <div style={{ padding:'0 12px 12px', borderTop:'1px solid var(--bd-subtle)' }}>
 
@@ -251,12 +308,10 @@ export default function UserManagementPanel({ onClose }) {
                       {saving[u.username] && <span style={{ fontSize:11, color:'var(--tx-muted)' }}>Saving…</span>}
                     </div>
 
-                    {/* Extra permissions (grant above base role) */}
+                    {/* Extra permissions */}
                     <div style={{ fontSize:11, fontWeight:700, color:'var(--tx-muted)', textTransform:'uppercase', letterSpacing:'0.08em', marginBottom:6 }}>
                       Extra Permissions
-                      <span style={{ fontWeight:400, textTransform:'none', marginLeft:6, color:'var(--tx-muted)' }}>
-                        — grant specific capabilities beyond their role
-                      </span>
+                      <span style={{ fontWeight:400, textTransform:'none', marginLeft:6 }}>— grant capabilities beyond their role</span>
                     </div>
                     {PERMISSION_GROUPS.map(grp => (
                       <div key={grp.label} style={{ marginBottom:8 }}>
@@ -264,15 +319,15 @@ export default function UserManagementPanel({ onClose }) {
                         <div style={{ display:'flex', flexWrap:'wrap', gap:5 }}>
                           {grp.perms.map(perm => {
                             const hasIt  = Array.isArray(u.extra_permissions) && u.extra_permissions.includes(perm)
-                            const byRole = (() => { const ROLE_RANK={viewer:0,operator:1,admin:2}; const PERM_MIN={view_dashboard:'viewer',view_files:'viewer',view_filesystem:'viewer',view_kb:'viewer',view_tools:'viewer',view_agents:'viewer',view_settings:'viewer',view_models:'viewer',kb_search:'viewer',kb_rag_query:'viewer',upload_files:'operator',delete_files:'operator',ingest_kb:'operator',delete_kb_source:'operator',clear_kb:'operator',save_kb_config:'operator',run_task:'operator',chat_send:'operator',web_search:'operator',filesystem_write:'operator',approve_spawn:'operator',add_tool:'operator',edit_tool:'operator',delete_tool:'operator',edit_agent:'operator',edit_skills_md:'operator',manage_users:'admin',create_agent:'admin',delete_agent:'admin',edit_settings:'admin',change_model:'admin',self_improve:'admin',assign_roles:'admin'}; return (ROLE_RANK[u.role]??-1) >= (ROLE_RANK[PERM_MIN[perm]]??99) })()
+                            const byRole = (ROLE_RANK[u.role] ?? -1) >= (ROLE_RANK[PERM_MIN[perm]] ?? 99)
                             return (
-                              <button
-                                key={perm}
+                              <button key={perm}
                                 disabled={byRole}
-                                title={byRole ? 'Already granted by role' : (hasIt ? 'Revoke extra permission' : 'Grant extra permission')}
+                                title={byRole ? 'Already granted by role' : (hasIt ? 'Revoke' : 'Grant')}
                                 onClick={() => !byRole && toggleExtraPerm(u, perm)}
                                 style={{
-                                  padding:'2px 8px', borderRadius:999, fontSize:10, cursor: byRole ? 'default' : 'pointer',
+                                  padding:'2px 8px', borderRadius:999, fontSize:10,
+                                  cursor: byRole ? 'default' : 'pointer',
                                   border: `1px solid ${byRole ? 'var(--bd-subtle)' : hasIt ? 'rgba(16,185,129,0.5)' : 'var(--bd-subtle)'}`,
                                   background: byRole ? 'rgba(255,255,255,0.03)' : hasIt ? 'rgba(16,185,129,0.1)' : 'transparent',
                                   color: byRole ? 'var(--tx-muted)' : hasIt ? '#6ee7b7' : 'var(--tx-secondary)',
@@ -323,8 +378,7 @@ export default function UserManagementPanel({ onClose }) {
           <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:12 }}>
             <span style={{ fontSize:12, color:'var(--tx-secondary)' }}>Role:</span>
             {ROLES.map(r => (
-              <button key={r}
-                onClick={() => setNewRole(r)}
+              <button key={r} onClick={() => setNewRole(r)}
                 style={{
                   padding:'3px 12px', borderRadius:999, fontSize:11, fontWeight:700, cursor:'pointer',
                   border: `1px solid ${newRole===r ? ROLE_META[r].color : 'var(--bd-subtle)'}`,
@@ -340,6 +394,79 @@ export default function UserManagementPanel({ onClose }) {
             onClick={createUser}
             disabled={creating || !newUsername.trim() || !newPassword.trim()}>
             {creating ? '⟳ Creating…' : '➕ Create User'}
+          </button>
+        </div>
+      )}
+
+      {/* ── ROLE CAPABILITIES ── */}
+      {tab === 'roles' && canAssign && (
+        <div style={{ flex:1, overflowY:'auto', padding:'12px 14px' }}>
+          <div style={{ ...sectionTitle, marginBottom:4 }}>🛡️ Role Capabilities</div>
+          <p style={{ fontSize:12, color:'var(--tx-muted)', marginBottom:14, maxWidth:'60ch' }}>
+            Set the <strong>minimum role</strong> required for each permission.
+            Each role inherits all permissions at its level and below.
+          </p>
+
+          {/* Column headers */}
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 80px 80px 80px', gap:4, marginBottom:6 }}>
+            <div style={{ fontSize:10, fontWeight:700, color:'var(--tx-muted)', textTransform:'uppercase', letterSpacing:'0.07em' }}>Permission</div>
+            {ROLES.map(r => (
+              <div key={r} style={{ fontSize:10, fontWeight:700, textAlign:'center',
+                color: ROLE_META[r].color, textTransform:'uppercase', letterSpacing:'0.07em' }}>
+                {ROLE_META[r].label}
+              </div>
+            ))}
+          </div>
+
+          {PERMISSION_GROUPS.map(grp => (
+            <div key={grp.label} style={{ marginBottom:14 }}>
+              <div style={{
+                fontSize:10, fontWeight:700, color:'var(--tx-muted)', textTransform:'uppercase',
+                letterSpacing:'0.08em', marginBottom:5, paddingBottom:4,
+                borderBottom:'1px solid var(--bd-subtle)'
+              }}>{grp.label}</div>
+
+              {grp.perms.map(perm => {
+                const currentMin = permRole[perm] || PERM_MIN[perm] || 'admin'
+                return (
+                  <div key={perm} style={{
+                    display:'grid', gridTemplateColumns:'1fr 80px 80px 80px',
+                    gap:4, alignItems:'center', padding:'4px 0',
+                    borderBottom:'1px solid rgba(255,255,255,0.03)'
+                  }}>
+                    <div style={{ fontSize:12, color:'var(--tx-secondary)' }}>
+                      {PERMISSION_LABELS[perm] || perm}
+                    </div>
+                    {ROLES.map(r => (
+                      <div key={r} style={{ display:'flex', justifyContent:'center' }}>
+                        <label style={{ cursor:'pointer' }}
+                          title={`Require ${ROLE_META[r].label} for "${PERMISSION_LABELS[perm] || perm}"`}>
+                          <input
+                            type="checkbox"
+                            checked={currentMin === r}
+                            onChange={() => setPermRole(prev => ({ ...prev, [perm]: r }))}
+                            style={{ width:15, height:15, cursor:'pointer', accentColor: ROLE_META[r].color }}
+                          />
+                        </label>
+                      </div>
+                    ))}
+                  </div>
+                )
+              })}
+            </div>
+          ))}
+
+          {roleCapMsg && (
+            <div style={{
+              padding:'8px 12px', borderRadius:6, marginBottom:10,
+              background: roleCapMsg.startsWith('✅') ? 'rgba(16,185,129,0.1)' : 'rgba(251,191,36,0.08)',
+              border: `1px solid ${roleCapMsg.startsWith('✅') ? 'rgba(16,185,129,0.3)' : 'rgba(251,191,36,0.3)'}`,
+              color: roleCapMsg.startsWith('✅') ? '#6ee7b7' : '#fcd34d', fontSize:12,
+            }}>{roleCapMsg}</div>
+          )}
+
+          <button className="run-btn" onClick={saveRoleCapabilities} disabled={roleCapSaving}>
+            {roleCapSaving ? '⟳ Saving…' : '💾 Save Role Capabilities'}
           </button>
         </div>
       )}
