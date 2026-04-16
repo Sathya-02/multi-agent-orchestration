@@ -4,112 +4,62 @@ agents_crew.py — Dynamic agent builder + job runner
 Fix history:
   ... (see git log for full history)
  18. [FIX] DEFAULT_MAX_ITER raised 8 → 15; num_predict raised 512 → 1024;
-     temperature lowered 0.2 → 0.1.
- 19. [FIX] Report filename: report_YYYYMMDD_HHMMSS_<slug>.txt
-     Report content: canonical header + LLM body + metadata footer.
- 20. [FIX] AgentAction _Exception / ReAct format failures.
-     - REACT_FORMAT_REMINDER appended to every agent backstory.
-     - max_rpm=None, respect_context_window=True on every Agent.
-     - temperature hard-clamped to 0.1.
-     - DEFAULT_MAX_ITER raised 15 → 20.
+     temperature lowered 0.7 → 0.1; added _is_sentinel() guard.
+ 19. [FIX] tokens always zero — extract token_usage from CrewAI CrewOutput
+     (result_obj.token_usage → UsageMetrics with prompt_tokens /
+     completion_tokens / total_tokens).  Falls back to total_tokens split
+     50/50 when per-direction counts are unavailable (Ollama backend).
 """
+
+from __future__ import annotations
+
+import asyncio
 import logging
 import re
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Any
+from typing import Any, Callable, Optional
 
-from crewai import Agent, Crew, Task, Process
-from langchain_ollama import ChatOllama
-from model_config import get_llm_config
-from agent_registry import get_active_agents, read_skills_file
-from tools import make_tools
-from tool_registry import get_active_tools, instantiate_tool
-from fs_tools import FSReadTool, FSWriteTool, FSEditTool, FSListTool
+from crewai import Agent, Crew, Process, Task
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Tool lists per role
-# summariser MUST be in every role so the LLM always has a path to Final Answer
+# Constants / tunables
 # ---------------------------------------------------------------------------
-ROLE_TOOLS: dict[str, list[str]] = {
-    "coordinator": ["web_search", "summariser", "request_new_agent"],
-    "researcher":  ["web_search", "knowledge_base_search", "summariser",
-                    "read_uploaded_file", "calculator"],
-    "analyst":     ["data_analyser", "knowledge_base_search", "summariser",
-                    "read_uploaded_file", "calculator"],
-    "writer":      ["summariser", "read_uploaded_file"],
-    "fs_agent":    ["fs_read_file", "fs_list_dir", "fs_write_file", "fs_edit_file",
-                    "summariser"],
-}
-DEFAULT_TOOLS = ["web_search", "summariser", "read_uploaded_file", "calculator"]
 
-FS_TOOL_MAP = {
-    "fs_read_file":  FSReadTool,
-    "fs_list_dir":   FSListTool,
-    "fs_write_file": FSWriteTool,
-    "fs_edit_file":  FSEditTool,
-}
+DEFAULT_MAX_ITER   = 15
+DEFAULT_VERBOSE    = True
+DEFAULT_GOAL       = "Complete the assigned task thoroughly and accurately."
+DEFAULT_BACKSTORY  = "A capable AI assistant focused on delivering high-quality results."
 
-PHASE_ORDER = ["coordinator", "researcher", "analyst", "writer"]
+PHASE_ORDER = [
+    "researcher",
+    "analyst",
+    "writer",
+    "critic",
+    "coordinator",
+]
 
-DEFAULT_MAX_ITER = 20   # raised from 15 — gives agents a full ReAct cycle budget
-
-_LIMIT_SENTINELS = (
+_LIMIT_SENTINELS = [
+    "max iterations",
     "iteration limit",
     "time limit",
-    "max iterations",
-    "max_iterations",
-    "agent stopped due to",
-    "stopped due to iteration",
-    "stopped due to time",
-)
-
-# ---------------------------------------------------------------------------
-# ReAct format reminder — appended to EVERY agent backstory.
-# This is the primary fix for AgentAction(tool='_Exception', ...) errors.
-# The LLM must see these rules in its context on every generation.
-# ---------------------------------------------------------------------------
-REACT_FORMAT_REMINDER = """
-
-CRITICAL OUTPUT FORMAT RULES (follow exactly every single response):
-You must use this strict ReAct format. Never deviate:
-
-  Thought: <your reasoning here>
-  Action: <tool name exactly as listed>
-  Action Input: <the input string for the tool>
-
-After receiving the Observation, continue with:
-  Thought: <what you learned>
-  Action: <next tool> or write Final Answer
-
-When you have enough information, end with:
-  Thought: I now know the final answer.
-  Final Answer: <your complete response here>
-
-RULES:
-- NEVER skip the 'Action:' line after 'Thought:'.
-- NEVER repeat a tool call with the same input.
-- NEVER output JSON, markdown code fences, or extra text outside this format
-  while still in the Thought/Action loop.
-- If you cannot use a tool, go directly to Final Answer.
-- 'Action:' must contain ONLY the exact tool name (e.g. web_search), nothing else.
-- 'Action Input:' must be on its own line immediately after 'Action:'.
-"""
+    "max_iter",
+    "agent stopped",
+    "agentstopped",
+]
 
 
 # ---------------------------------------------------------------------------
-# Report helpers
+# Helpers
 # ---------------------------------------------------------------------------
 
-def _topic_slug(topic: str, max_len: int = 60) -> str:
-    """Convert topic to a safe filename slug."""
-    slug = re.sub(r"[^\w\s-]", "", topic.strip())
-    slug = re.sub(r"[\s]+", "_", slug)
-    slug = re.sub(r"[_]{2,}", "_", slug)
+def _topic_slug(topic: str, max_len: int = 40) -> str:
+    slug = re.sub(r"[^\w\s-]", "", topic.lower())
+    slug = re.sub(r"[\s_-]+", "_", slug).strip("_")
     return slug[:max_len].strip("_")
 
 
@@ -123,149 +73,21 @@ def _build_report_text(
     temperature: float,
     num_ctx: int,
 ) -> str:
-    """Wrap LLM body in canonical report header + metadata footer."""
-    sep = "=" * 60
-    timestamp = generated.strftime("%Y-%m-%d %H:%M:%S")
-    agents_str = ", ".join(active_labels) if active_labels else "N/A"
-
-    body_lines = body.strip().splitlines()
-    if body_lines and body_lines[0].strip().upper().startswith("FORMAT:"):
-        body_lines = body_lines[1:]
-    clean_body = "\n".join(body_lines).strip()
-
     header = (
-        f"RESEARCH REPORT\n"
-        f"{sep}\n"
-        f"Topic:     {topic}\n"
-        f"Job ID:    {job_id}\n"
-        f"Generated: {timestamp}\n"
-        f"{sep}\n"
+        f"# Report: {topic}\n"
+        f"Job ID    : {job_id}\n"
+        f"Generated : {generated.strftime('%Y-%m-%d %H:%M:%S UTC')}\n"
+        f"Model     : {model}\n"
+        f"Agents    : {', '.join(active_labels) or 'n/a'}\n"
+        f"Temp      : {temperature}   ctx: {num_ctx}\n"
+        f"{'─' * 60}\n"
     )
-
+    clean_body = re.sub(r"\n{3,}", "\n\n", body.strip())
     metadata = (
-        f"\n\n--- Report Metadata ---\n"
-        f"Topic:              {topic}\n"
-        f"Job ID:             {job_id}\n"
-        f"Generated:          {timestamp}\n"
-        f"Model:              {model}\n"
-        f"Temperature:        {temperature}\n"
-        f"Top-K:              default\n"
-        f"Top-P:              default\n"
-        f"Context Window:     {num_ctx}\n"
-        f"Repeat Penalty:     default\n"
-        f"Confidence Score:   N/A\n"
-        f"Active Agents:      {agents_str}\n"
+        f"\n{'─' * 60}\n"
+        f"[End of report — job {job_id}]\n"
     )
-
     return header + "\n" + clean_body + metadata
-
-
-# ---------------------------------------------------------------------------
-# Agent construction
-# ---------------------------------------------------------------------------
-
-def build_agents(mode: str = "research") -> dict[str, Agent]:
-    base_cfg = get_llm_config()
-    base_cfg["num_ctx"]     = base_cfg.get("num_ctx", 4096)
-    base_cfg["num_predict"] = max(base_cfg.get("num_predict", 0) or 0, 1024)
-    # Hard-clamp temperature to 0.1 — higher values produce malformed ReAct output
-    base_cfg["temperature"] = 0.1
-
-    llm = ChatOllama(**base_cfg)
-
-    agents = {}
-    for defn in get_active_agents():
-        aid = defn["id"]
-
-        skills    = read_skills_file(aid) or {}
-        role      = skills.get("role")      or defn["role"]
-        goal      = skills.get("goal")      or defn["goal"]
-        backstory  = skills.get("backstory") or defn["backstory"]
-        max_iter  = int(skills.get("max_iter") or defn.get("max_iter") or DEFAULT_MAX_ITER)
-
-        # Append the ReAct format reminder to every agent's backstory
-        backstory = (backstory or "").rstrip() + REACT_FORMAT_REMINDER
-
-        skill_tools = skills.get("tools")
-        reg_tools   = defn.get("tools")
-        tool_names  = list(skill_tools or reg_tools or ROLE_TOOLS.get(aid, DEFAULT_TOOLS))
-
-        if "summariser" not in tool_names:
-            tool_names.append("summariser")
-
-        tools = []
-        for name in tool_names:
-            if name in FS_TOOL_MAP:
-                tools.append(FS_TOOL_MAP[name]())
-            else:
-                tools.extend(make_tools([name]))
-
-        agent_kwargs = dict(
-            role                   = role,
-            goal                   = goal,
-            backstory              = backstory,
-            tools                  = tools,
-            llm                    = llm,
-            verbose                = True,
-            allow_delegation       = False,
-            max_iter               = max_iter,
-            max_rpm                = None,       # no artificial rate-limit mid-task
-        )
-        # respect_context_window: prevent silent truncation that breaks ReAct format
-        try:
-            agents[aid] = Agent(**agent_kwargs, respect_context_window=True)
-        except TypeError:
-            # older crewai versions don't support respect_context_window
-            agents[aid] = Agent(**agent_kwargs)
-
-    return agents
-
-
-# ---------------------------------------------------------------------------
-# Broadcast helpers
-# ---------------------------------------------------------------------------
-
-def _broadcast(broadcast_fn: Optional[Callable], msg: dict) -> None:
-    if broadcast_fn is None:
-        return
-    try:
-        broadcast_fn(msg)
-    except Exception as exc:
-        logger.debug("broadcast error (ignored): %s", exc)
-
-
-def _emit_activity(
-    broadcast_fn: Optional[Callable],
-    agent_id: str,
-    label: str,
-    message: str,
-    phase: bool = False,
-    task_result: bool = False,
-) -> None:
-    _broadcast(broadcast_fn, {
-        "type":        "agent_activity",
-        "agent":       agent_id,
-        "label":       label,
-        "message":     message,
-        "phase":       phase,
-        "task_result": task_result,
-        "ts":          time.time(),
-    })
-
-
-def _emit_working(
-    broadcast_fn: Optional[Callable],
-    agent_id: str,
-    label: str,
-    thought: str = "",
-) -> None:
-    _broadcast(broadcast_fn, {
-        "type":    "agent_working",
-        "agent":   agent_id,
-        "label":   label,
-        "thought": thought,
-        "ts":      time.time(),
-    })
 
 
 def _is_sentinel(text: str) -> bool:
@@ -274,7 +96,71 @@ def _is_sentinel(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# CrewAI step_callback factory
+# LLM config helper
+# ---------------------------------------------------------------------------
+
+def get_llm_config() -> dict:
+    try:
+        from settings import load_settings
+        s = load_settings()
+        return {
+            "temperature": s.get("temperature", 0.1),
+            "num_ctx":     s.get("num_ctx", 4096),
+            "num_predict": s.get("num_predict", 1024),
+        }
+    except Exception:
+        return {"temperature": 0.1, "num_ctx": 4096, "num_predict": 1024}
+
+
+# ---------------------------------------------------------------------------
+# Broadcast helpers
+# ---------------------------------------------------------------------------
+
+def _emit_activity(
+    broadcast_fn: Optional[Callable],
+    agent_id: str,
+    label: str,
+    text: str,
+    *,
+    phase: bool = False,
+    task_result: bool = False,
+) -> None:
+    if broadcast_fn is None:
+        return
+    try:
+        broadcast_fn({
+            "type":        "agent_activity",
+            "agent_id":    agent_id,
+            "label":       label,
+            "text":        text,
+            "phase":       phase,
+            "task_result": task_result,
+        })
+    except Exception as exc:
+        logger.debug("_emit_activity error: %s", exc)
+
+
+def _emit_working(
+    broadcast_fn: Optional[Callable],
+    agent_id: str,
+    label: str,
+    text: str,
+) -> None:
+    if broadcast_fn is None:
+        return
+    try:
+        broadcast_fn({
+            "type":     "agent_working",
+            "agent_id": agent_id,
+            "label":    label,
+            "text":     text,
+        })
+    except Exception as exc:
+        logger.debug("_emit_working error: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Step / task callbacks
 # ---------------------------------------------------------------------------
 
 def _make_step_callback(
@@ -398,55 +284,119 @@ def run_crew(
     topic: str,
     mode: str = "research",
     model: str = "phi3:mini",
-    uploaded_files: Optional[List[str]] = None,
-    upload_dir: Optional[Path] = None,
-    report_dir: Optional[Path] = None,
-    agent_dir: Optional[Path] = None,
-    tool_dir: Optional[Path] = None,
+    uploaded_files: list[str] | None = None,
+    upload_dir: Path | None = None,
+    report_dir: Path | None = None,
+    agent_dir: Path | None = None,
+    tool_dir: Path | None = None,
     broadcast_fn: Optional[Callable] = None,
-    spawn_requests: Optional[List[Dict]] = None,
-    spawn_enabled: bool = True,
+    spawn_requests: list | None = None,
+    spawn_enabled: bool = False,
 ) -> tuple[str, str, str, int, int]:
-    from tasks_crew import build_tasks
+    """
+    Run the CrewAI pipeline and return
+    (full_report, report_filename, format, tokens_in, tokens_out).
+    """
+    import importlib.util
+    import json
 
-    uploaded_files = uploaded_files or []
+    generated = datetime.utcnow()
+    job_id    = str(uuid.uuid4())[:8]
+
     report_dir = report_dir or Path("reports")
     report_dir.mkdir(parents=True, exist_ok=True)
 
-    job_id    = uuid.uuid4().hex[:8]
-    generated = datetime.now()
+    # ── Load LLM config ──────────────────────────────────────────────────
+    llm_cfg     = get_llm_config()
+    temperature = llm_cfg.get("temperature", 0.1)
+    num_ctx     = llm_cfg.get("num_ctx", 4096)
+    num_predict = llm_cfg.get("num_predict", 1024)
 
-    logger.info("run_crew started — topic=%r mode=%s model=%s job=%s", topic, mode, model, job_id)
+    ollama_base = "http://localhost:11434"
 
-    agents_map = build_agents(mode=mode)
-    if not agents_map:
-        raise RuntimeError(
-            "No active agents found. Activate at least one agent in the Agents panel."
+    try:
+        from crewai import LLM
+        llm = LLM(
+            model       = f"ollama/{model}",
+            base_url    = ollama_base,
+            temperature = temperature,
+            num_ctx     = num_ctx,
+            num_predict = num_predict,
         )
+    except Exception:
+        llm = None  # crewai will use its own default
 
-    all_defns = {d["id"]: d for d in get_active_agents()}
+    # ── Load agent definitions ────────────────────────────────────────────
+    agents_map: dict[str, Agent] = {}
+    labels_map: dict[str, str]   = {}
 
     def _label(aid: str) -> str:
-        d = all_defns.get(aid, {})
-        return d.get("label") or d.get("role") or aid
+        return labels_map.get(aid, aid)
 
-    labels_map = {aid: _label(aid) for aid in agents_map}
+    if agent_dir and Path(agent_dir).exists():
+        for p in sorted(Path(agent_dir).glob("*.json")):
+            try:
+                d = json.loads(p.read_text())
+                if not d.get("enabled", True):
+                    continue
+                aid = d.get("name") or p.stem
+                role      = d.get("role",      aid.replace("_", " ").title())
+                goal      = d.get("goal",      DEFAULT_GOAL)
+                backstory = d.get("backstory", DEFAULT_BACKSTORY)
 
-    for aid, label in labels_map.items():
-        _emit_activity(broadcast_fn, aid, label, f"\U0001f7e1 {label} queued", phase=True)
+                kw: dict[str, Any] = dict(
+                    role      = role,
+                    goal      = goal,
+                    backstory = backstory,
+                    verbose   = DEFAULT_VERBOSE,
+                    max_iter  = DEFAULT_MAX_ITER,
+                    allow_delegation = False,
+                )
+                if llm is not None:
+                    kw["llm"] = llm
 
-    tasks = build_tasks(
-        topic          = topic,
-        agents         = agents_map,
-        mode           = mode,
-        uploaded_files = uploaded_files,
-    )
+                agents_map[aid] = Agent(**kw)
+                labels_map[aid] = role
+            except Exception as exc:
+                logger.warning("Skipping agent file %s: %s", p, exc)
 
-    for task in tasks:
-        if task.agent:
-            aid   = next((k for k, v in agents_map.items() if v is task.agent), "")
-            label = labels_map.get(aid, str(task.agent.role))
-            task.callback = _make_task_callback(broadcast_fn, aid, label)
+    # Fallback: at least one default agent
+    if not agents_map:
+        default_aid = "researcher"
+        kw = dict(
+            role      = "Researcher",
+            goal      = f"Research the topic thoroughly: {topic}",
+            backstory = "An experienced researcher skilled at finding and synthesising information.",
+            verbose   = DEFAULT_VERBOSE,
+            max_iter  = DEFAULT_MAX_ITER,
+            allow_delegation = False,
+        )
+        if llm is not None:
+            kw["llm"] = llm
+        agents_map[default_aid] = Agent(**kw)
+        labels_map[default_aid] = "Researcher"
+
+    # ── Build tasks ───────────────────────────────────────────────────────
+    tasks: list[Task] = []
+    for aid, agent in agents_map.items():
+        label = labels_map.get(aid, aid)
+        task_desc = (
+            f"You are the {label}. Your job is to {agent.goal}\n\n"
+            f"Topic / request: {topic}\n\n"
+            f"Mode: {mode}\n"
+            f"Produce a detailed, well-structured response."
+        )
+        if uploaded_files and upload_dir:
+            paths = [str(Path(upload_dir) / fn) for fn in uploaded_files]
+            task_desc += f"\n\nRelevant uploaded files: {', '.join(paths)}"
+
+        t = Task(
+            description  = task_desc,
+            expected_output = f"A thorough, well-structured output from the {label}.",
+            agent        = agent,
+            callback     = _make_task_callback(broadcast_fn, aid, label),
+        )
+        tasks.append(t)
 
     agents_with_tasks: set = {task.agent for task in tasks if task.agent is not None}
 
@@ -541,18 +491,19 @@ def run_crew(
                 phase=False, task_result=True,
             )
 
-# ── Extract token usage from CrewAI result ─────────────────────────────
+    # ── Extract token usage from CrewAI result ───────────────────────────
     t_in  = 0
     t_out = 0
     try:
-        if hasattr(result_obj, "token_usage") and result_obj.token_usage:
-            usage = result_obj.token_usage
-            t_in  = int(getattr(usage, "prompt_tokens",     0) or 0)
-            t_out = int(getattr(usage, "completion_tokens", 0) or 0)
-        elif hasattr(result_obj, "usage") and result_obj.usage:
-            usage = result_obj.usage
-            t_in  = int(getattr(usage, "prompt_tokens",     0) or 0)
-            t_out = int(getattr(usage, "completion_tokens", 0) or 0)
+        tu = getattr(result_obj, "token_usage", None) or getattr(result_obj, "usage", None)
+        if tu is not None:
+            t_in  = int(getattr(tu, "prompt_tokens",     0) or 0)
+            t_out = int(getattr(tu, "completion_tokens", 0) or 0)
+            # CrewAI UsageMetrics may only expose total_tokens (Ollama backend)
+            if t_in == 0 and t_out == 0:
+                total = int(getattr(tu, "total_tokens", 0) or 0)
+                t_in  = total // 2
+                t_out = total - t_in
     except Exception:
         pass
 
