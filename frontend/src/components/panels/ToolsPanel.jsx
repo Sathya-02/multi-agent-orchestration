@@ -10,6 +10,16 @@
  *   List     → all roles
  *   Add Tool → operator+
  *   Edit MD  → operator+ (edit tool markdown/config file)
+ *
+ * Prop contract (must match App.jsx):
+ *   tools, pendingToolSpawns
+ *   handleToggleToolActive(tool)        ← full tool object
+ *   handleToolSpawnDecision(req, bool)  ← approve/deny
+ *   handleCreateTool(formObj)
+ *   handleDeleteTool(id)                ← tool.id
+ *   handleOpenToolMd(tool)              ← loads MD into App state
+ *   handleSaveToolMd()                  ← saves from App state (no args)
+ *   onClose
  */
 import { useState } from 'react'
 import '../../styles/App.css'
@@ -18,50 +28,44 @@ import { can } from '../../rbac.js'
 
 export default function ToolsPanel({
   tools, pendingToolSpawns,
-  handleToggleTool,
-  handleApproveToolSpawn, handleDenyToolSpawn,
-  handleAddTool, handleDeleteTool, handleSaveToolMd,
+  handleToggleToolActive,
+  handleToolSpawnDecision,
+  handleCreateTool, handleDeleteTool,
+  handleOpenToolMd, handleSaveToolMd,
   onClose
 }) {
   const { user } = useAuth()
-  const canToggle  = can(user, 'add_tool')
   const canAdd     = can(user, 'add_tool')
   const canEditMd  = can(user, 'edit_tool')
   const canDelete  = can(user, 'delete_tool')
+  const canToggle  = can(user, 'add_tool')
   const canApprove = can(user, 'approve_spawn')
 
   const TABS = [
     { key: 'list',   label: '🔧 Tools' },
     ...(canAdd    ? [{ key: 'add',    label: '➕ Add Tool' }] : []),
-    ...(canEditMd ? [{ key: 'editmd', label: '📝 Edit MD'  }] : []),
   ]
 
-  const [tab,         setTab]         = useState('list')
-  const [editToolName, setEditToolName] = useState('')
-  const [toolMdContent, setToolMdContent] = useState('')
+  const [tab, setTab] = useState('list')
 
   // Add tool form state
-  const [newName, setNewName]   = useState('')
-  const [newDesc, setNewDesc]   = useState('')
-  const [newIcon, setNewIcon]   = useState('')
-  const [newTags, setNewTags]   = useState('')
+  const [newName,    setNewName]    = useState('')
+  const [newDesc,    setNewDesc]    = useState('')
+  const [newIcon,    setNewIcon]    = useState('')
+  const [newTags,    setNewTags]    = useState('')
   const [newEnabled, setNewEnabled] = useState(true)
 
   const onAddTool = () => {
     if (!newName.trim() || !canAdd) return
-    handleAddTool({
-      name: newName.trim(),
+    handleCreateTool({
+      name:        newName.trim(),
       description: newDesc.trim(),
-      icon: newIcon.trim() || '🔧',
-      tags: newTags.split(',').map(t => t.trim()).filter(Boolean),
-      enabled: newEnabled,
+      icon:        newIcon.trim() || '🔧',
+      tags:        newTags.split(',').map(t => t.trim()).filter(Boolean),
+      enabled:     newEnabled,
     })
     setNewName(''); setNewDesc(''); setNewIcon(''); setNewTags('')
-  }
-
-  const onSaveMd = () => {
-    if (!editToolName.trim() || !canEditMd) return
-    handleSaveToolMd(editToolName.trim(), toolMdContent)
+    setTab('list')
   }
 
   return (
@@ -91,8 +95,8 @@ export default function ToolsPanel({
                   <span style={{ flex:1, color:'var(--tx-secondary)' }}>{s.name || s.tool_name || `Tool #${i+1}`}</span>
                   {canApprove ? (
                     <>
-                      <button className="agent-action-btn" onClick={() => handleApproveToolSpawn(s)}>✅ Approve</button>
-                      <button className="agent-action-btn danger" onClick={() => handleDenyToolSpawn(s)}>✕ Deny</button>
+                      <button className="agent-action-btn" onClick={() => handleToolSpawnDecision(s, true)}>✅ Approve</button>
+                      <button className="agent-action-btn danger" onClick={() => handleToolSpawnDecision(s, false)}>✕ Deny</button>
                     </>
                   ) : (
                     <span style={{ fontSize:11, color:'var(--tx-muted)' }}>Operator+ required</span>
@@ -109,7 +113,7 @@ export default function ToolsPanel({
           <div style={{ flex:1, overflowY:'auto', padding:'10px 14px' }}>
             {tools.length === 0 && <div className="empty-hint">No tools registered.</div>}
             {tools.map((t, i) => (
-              <div key={t.name || i} style={toolCard}>
+              <div key={t.id || t.name || i} style={toolCard}>
                 <span style={{ fontSize:18 }}>{t.icon || '🔧'}</span>
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ fontSize:13, fontWeight:600, color:'var(--tx-primary)' }}>{t.name}</div>
@@ -120,17 +124,24 @@ export default function ToolsPanel({
                     </div>
                   )}
                 </div>
+                {/* Edit MD button — operator+ */}
+                {canEditMd && handleOpenToolMd && (
+                  <button className="agent-action-btn" onClick={() => handleOpenToolMd(t)} title="Edit tool MD">✏️</button>
+                )}
+                {/* Toggle enable/disable — operator+ */}
                 {canToggle ? (
-                  <button className={`si-toggle ${t.enabled !== false ? 'on' : 'off'}`}
-                    onClick={() => handleToggleTool(t.name)}
+                  <button
+                    className={`si-toggle ${t.enabled !== false ? 'on' : 'off'}`}
+                    onClick={() => handleToggleToolActive(t)}
                     title={t.enabled !== false ? 'Disable' : 'Enable'}>
                     {t.enabled !== false ? '🟢' : '🔴'}
                   </button>
                 ) : (
                   <span style={{ fontSize:16 }}>{t.enabled !== false ? '🟢' : '🔴'}</span>
                 )}
+                {/* Delete — operator+ */}
                 {canDelete && (
-                  <button className="del-btn" onClick={() => handleDeleteTool(t.name)} title="Delete tool">🗑</button>
+                  <button className="del-btn" onClick={() => handleDeleteTool(t.id || t.name)} title="Delete tool">🗑</button>
                 )}
               </div>
             ))}
@@ -159,36 +170,6 @@ export default function ToolsPanel({
           </div>
           <button className="run-btn" onClick={onAddTool} disabled={!newName.trim()}>
             ➕ Add Tool
-          </button>
-        </div>
-      )}
-
-      {/* ── EDIT MD tab ── */}
-      {tab === 'editmd' && canEditMd && (
-        <div className="kb-body">
-          <div style={sectionTitle}>📝 Edit Tool Markdown / Config</div>
-          <div style={{ display:'flex', gap:8, marginBottom:8 }}>
-            <input className="topic-input" style={{ flex:1, marginBottom:0 }}
-              placeholder="Tool name to edit"
-              value={editToolName}
-              onChange={e => setEditToolName(e.target.value)} />
-            <button className="fs-apply-btn"
-              onClick={async () => {
-                if (!editToolName.trim()) return
-                // Try to load existing MD from tools list
-                const t = tools.find(t => t.name === editToolName.trim())
-                setToolMdContent(t?.md || t?.markdown || t?.config_md || `# ${editToolName}\n\nDescribe this tool here.`)
-              }}>📖 Load</button>
-          </div>
-          <textarea className="topic-input"
-            value={toolMdContent}
-            onChange={e => setToolMdContent(e.target.value)}
-            rows={14}
-            placeholder="Tool markdown / config appears here after Load…" />
-          <button className="run-btn" style={{ marginTop:8 }}
-            onClick={onSaveMd}
-            disabled={!editToolName.trim() || !toolMdContent.trim()}>
-            💾 Save Tool MD
           </button>
         </div>
       )}
