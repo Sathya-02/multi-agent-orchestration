@@ -55,3 +55,4 @@ backend/tools/*/TOOL.md      # runtime-edited tool definitions
 *.log
 *.jsonl
 *.log
+backend/users.json
