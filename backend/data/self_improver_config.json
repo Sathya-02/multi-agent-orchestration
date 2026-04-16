@@ -1,7 +1,0 @@
-{
-  "enabled": true,
-  "interval_hours": 6,
-  "auto_apply": true,
-  "auto_apply_safe": true,
-  "min_confidence": 0.8
-}
