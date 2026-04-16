@@ -164,8 +164,8 @@ def _emit_activity(
         return
     try:
         broadcast_fn({
-            "type": "agent_activity", "agent_id": agent_id,
-            "label": label, "text": text,
+            "type": "agent_activity", "agent": agent_id,
+            "label": label, "message": text,
             "phase": phase, "task_result": task_result,
         })
     except Exception as exc:
@@ -176,8 +176,8 @@ def _emit_working(broadcast_fn, agent_id: str, label: str, text: str) -> None:
     if not broadcast_fn:
         return
     try:
-        broadcast_fn({"type": "agent_working", "agent_id": agent_id,
-                      "label": label, "text": text})
+        broadcast_fn({"type": "agent_working", "agent": agent_id,
+              "label": label, "message": text})
     except Exception as exc:
         logger.debug("_emit_working error: %s", exc)
 

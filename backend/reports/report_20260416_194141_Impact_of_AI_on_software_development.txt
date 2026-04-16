@@ -1,0 +1,23 @@
+RESEARCH REPORT
+============================================================
+Topic:     Impact of AI on software development
+Job ID:    0b3b4f20
+Generated: 2026-04-16 19:41:41
+============================================================
+
+The report concludes with the need for software engineering teams to prioritize responsible implementation strategies that address ethical challenges related to AI use, potential job displacement concerns due to automation of routine tasks, while also investing in reskilling programs and continuous learning opportunities as they adapt their skill sets towards higher-value activities such as designing and implementing intelligent systems.
+
+Thought: I now know the final answer.
+
+--- Report Metadata ---
+Topic:              Impact of AI on software development
+Job ID:             0b3b4f20
+Generated:          2026-04-16 19:41:41
+Model:              phi3:mini
+Temperature:        0.3
+Top-K:              default
+Top-P:              default
+Context Window:     4096
+Repeat Penalty:     default
+Confidence Score:   N/A
+Active Agents:      Coordinator, Researcher, Analyst, Writer
